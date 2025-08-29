@@ -2,8 +2,8 @@ name: Build ERPNext AIO Image
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
   workflow_dispatch: {}
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # 推送到 GHCR 需要
+      packages: write  # 推 GHCR 需要
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to DockerHub (optional)
-        if: secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN
+        if: ${{ secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -39,21 +39,20 @@ jobs:
       - name: Derive tags
         id: meta
         run: |
-          IMAGE_NAME_GHCR=ghcr.io/${{ github.repository_owner }}/erpnext15-aio
-          IMAGE_NAME_DH=${{ secrets.DOCKERHUB_USERNAME && format('{0}/erpnext15-aio', secrets.DOCKERHUB_USERNAME) || '' }}
-          # 默认 latest；若是 tag 触发，加上同名 tag
+          IMAGE_NAME_GHCR="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erpnext15-aio"
           TAGS_GHCR="${IMAGE_NAME_GHCR}:latest"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            REF_TAG="${GITHUB_REF_NAME}"
-            TAGS_GHCR="${TAGS_GHCR},${IMAGE_NAME_GHCR}:${REF_TAG}"
+            TAGS_GHCR="${TAGS_GHCR},${IMAGE_NAME_GHCR}:${GITHUB_REF_NAME}"
           fi
-          echo "ghcr=${TAGS_GHCR}" >> $GITHUB_OUTPUT
-          if [[ -n "${IMAGE_NAME_DH}" ]]; then
+          echo "ghcr=${TAGS_GHCR}" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]]; then
+            IMAGE_NAME_DH="${{ secrets.DOCKERHUB_USERNAME }}/erpnext15-aio"
             TAGS_DH="${IMAGE_NAME_DH}:latest"
             if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
               TAGS_DH="${TAGS_DH},${IMAGE_NAME_DH}:${GITHUB_REF_NAME}"
             fi
-            echo "dh=${TAGS_DH}" >> $GITHUB_OUTPUT
+            echo "dh=${TAGS_DH}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push (GHCR)
@@ -65,16 +64,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.ghcr }}
           build-args: |
+            CHINA_MIRRORS=no
             FRAPPE_BRANCH=version-15
             ERPNEXT_BRANCH=version-15
             SITE_NAME=site1.local
             ADMIN_PASSWORD=admin
             SITE_DB_PASSWORD=Pass1234
             MARIADB_ROOT_PASSWORD=Pass1234
-            CHINA_MIRRORS=yes
 
       - name: Build and push (DockerHub) - optional
-        if: steps.meta.outputs.dh
+        if: ${{ steps.meta.outputs.dh != '' }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -83,10 +82,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.dh }}
           build-args: |
+            CHINA_MIRRORS=no
             FRAPPE_BRANCH=version-15
             ERPNEXT_BRANCH=version-15
             SITE_NAME=site1.local
             ADMIN_PASSWORD=admin
             SITE_DB_PASSWORD=Pass1234
             MARIADB_ROOT_PASSWORD=Pass1234
-            CHINA_MIRRORS=yes
