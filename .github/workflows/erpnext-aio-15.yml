@@ -2,28 +2,76 @@ name: Build ERPNext AIO Image
 
 on:
   push:
-    branches: [ "main", "master" ]
-    tags: [ "v*" ]  # 打 v* tag 会用该 tag(去掉前缀 v) 作为版本号
+    branches: [ main, master ]
+    tags: [ 'v*' ]           # 打 v* tag 时也会触发（并自动用该版本）
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（如 15.77.0）。留空：tag 触发用 tag；否则自动生成 YYYY.MM.DD-<run>"
+        description: '版本号（如 15.77.0）。若留空且用 tag 触发，会用 tag；否则只发 latest'
         required: false
-      push_latest:
-        description: "是否同时打 latest 标签"
+      push_git_tag:
+        description: '构建成功后，把该版本回推为 Git tag（v{version}）'
+        type: boolean
+        default: true
+      force_rebuild:
+        description: '强制全量重建（禁用缓存）'
         type: boolean
         default: false
-      force_overwrite:
-        description: "是否允许覆盖已有同名版本（true=允许覆盖；false=存在则失败）"
+
+      # ===== 新增：外部 MySQL / Redis / 站点与本地化 =====
+      use_external_db:
+        description: '使用外部 MySQL/MariaDB（是/否）'
+        type: boolean
+        default: false
+      db_host:
+        description: '外部 DB 主机（例：10.0.0.12 或 rds.xxx）'
+        required: false
+      db_port:
+        description: '外部 DB 端口（默认 3306）'
+        required: false
+      db_root_user:
+        description: 'DB root 用户（默认 root）'
+        required: false
+      db_root_password:
+        description: 'DB root 密码（建议用 repo Secret: DB_ROOT_PASSWORD）'
+        required: false
+
+      use_external_redis:
+        description: '使用外部 Redis（是/否）'
+        type: boolean
+        default: false
+      redis_cache_url:
+        description: 'Redis Cache URL（例：redis://:pwd@host:6379）'
+        required: false
+      redis_queue_url:
+        description: 'Redis Queue URL'
+        required: false
+      redis_socketio_url:
+        description: 'Redis SocketIO URL'
+        required: false
+
+      create_site_at_build:
+        description: '构建期就创建站点（外部 DB 建议关闭）'
         type: boolean
         default: true
 
+      # 语言/时区/站点名（可不改，给默认）
+      tz:
+        description: '时区（默认 Asia/Shanghai）'
+        required: false
+      locale:
+        description: 'Locale（默认 zh_CN.UTF-8）'
+        required: false
+      site_name:
+        description: '站点名（默认 site1.local）'
+        required: false
+
 permissions:
-  contents: read
-  packages: write
+  contents: write     # 回推 Git tag 需要
+  packages: write     # 推 GHCR 需要
 
 concurrency:
-  group: erpnext-aio-15-${{ github.ref_name }}
+  group: erpnext-aio-15-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -47,56 +95,94 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 统一派生版本号与是否覆盖/是否latest等，再以 outputs 传下去
       - name: Derive version & tags
         id: meta
         shell: bash
-        env:
-          IN_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || '' }}
-          IN_PUSH_LATEST: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.push_latest || 'false' }}
-          IN_FORCE_OVERWRITE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_overwrite || 'true' }}
         run: |
           set -euo pipefail
-
           OWNER_LC="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/${OWNER_LC}/erpnext15-aio"
 
-          # 版本优先级：手动输入 > tag 触发 > 自动生成
-          if [[ -n "${IN_VERSION}" ]]; then
-            VER="${IN_VERSION}"
+          # 版本优先级：手动输入 > tag 触发 > 空
+          IN="${{ inputs.version || '' }}"
+          if [[ -n "$IN" ]]; then
+            VER="$IN"
           elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             VER="${GITHUB_REF_NAME#v}"   # 去掉前缀 v
           else
-            VER="$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}"
+            VER=""
           fi
 
-          TAGS="${IMAGE}:${VER}"
-          if [[ "${IN_PUSH_LATEST}" == 'true' ]]; then
-            TAGS="${TAGS},${IMAGE}:latest"
+          # 组装 tags
+          TAGS="${IMAGE}:latest"
+          if [[ -n "$VER" ]]; then
+            TAGS="${TAGS},${IMAGE}:${VER},${IMAGE}:v${VER}"
           fi
 
-          echo "image=${IMAGE}"                         >> "$GITHUB_OUTPUT"
-          echo "version=${VER}"                         >> "$GITHUB_OUTPUT"
-          echo "tags=${TAGS}"                           >> "$GITHUB_OUTPUT"
-          echo "force_overwrite=${IN_FORCE_OVERWRITE}"  >> "$GITHUB_OUTPUT"
-          echo "Computed tags: ${TAGS}"
-          echo "Force overwrite: ${IN_FORCE_OVERWRITE}"
+          echo "image=${IMAGE}"   >> "$GITHUB_OUTPUT"
+          echo "version=${VER}"   >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"     >> "$GITHUB_OUTPUT"
 
-      # 只有当不允许覆盖时才做存在性检查；完全避免直接引用 inputs.*
-      - name: Guard: disallow overwrite if tag exists
-        if: ${{ steps.meta.outputs.force_overwrite == 'false' }}
+      # 把 inputs 与 secrets 统一收敛为 build-args 文本，避免在 YAML 里写复杂表达式
+      - name: Compute build args
+        id: args
         shell: bash
         run: |
           set -euo pipefail
-          IMG="${{ steps.meta.outputs.image }}"
-          VER="${{ steps.meta.outputs.version }}"
-          if docker buildx imagetools inspect "${IMG}:${VER}" >/dev/null 2>&1; then
-            echo "❌ 镜像标签已存在：${IMG}:${VER}"
-            echo "如需覆盖，请在触发工作流时把 force_overwrite 设为 true。"
-            exit 1
-          else
-            echo "✅ 未发现同名版本标签，继续构建。"
-          fi
+
+          yn() { [[ "$1" == "true" || "$1" == "yes" || "$1" == "on" ]] && echo "yes" || echo "no"; }
+
+          USE_DB="$(yn "${{ github.event.inputs.use_external_db || '' }}")"
+          USE_REDIS="$(yn "${{ github.event.inputs.use_external_redis || '' }}")"
+          CREATE_SITE="$(yn "${{ github.event.inputs.create_site_at_build || '' }}")"
+
+          DB_HOST="${{ github.event.inputs.db_host || '' }}"
+          DB_PORT="${{ github.event.inputs.db_port || '' }}"
+          DB_ROOT_USER="${{ github.event.inputs.db_root_user || '' }}"
+          # 优先 inputs，其次 repo secret
+          DB_ROOT_PASSWORD_INPUT="${{ github.event.inputs.db_root_password || '' }}"
+          DB_ROOT_PASSWORD_SECRET="${{ secrets.DB_ROOT_PASSWORD || '' }}"
+          DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD_INPUT:-$DB_ROOT_PASSWORD_SECRET}"
+
+          REDIS_CACHE_URL="${{ github.event.inputs.redis_cache_url || '' }}"
+          REDIS_QUEUE_URL="${{ github.event.inputs.redis_queue_url || '' }}"
+          REDIS_SOCKETIO_URL="${{ github.event.inputs.redis_socketio_url || '' }}"
+
+          TZ_IN="${{ github.event.inputs.tz || '' }}"
+          LOCALE_IN="${{ github.event.inputs.locale || '' }}"
+          SITE_NAME_IN="${{ github.event.inputs.site_name || '' }}"
+
+          # 给默认值（尽量不传空）
+          TZ="${TZ_IN:-Asia/Shanghai}"
+          LOCALE="${LOCALE_IN:-zh_CN.UTF-8}"
+          SITE_NAME="${SITE_NAME_IN:-site1.local}"
+
+          # 输出为多行 build-args
+          {
+            echo 'buildargs<<ARGS'
+            echo "USE_EXTERNAL_DB=${USE_DB}"
+            echo "DB_HOST=${DB_HOST}"
+            echo "DB_PORT=${DB_PORT:-3306}"
+            echo "DB_ROOT_USER=${DB_ROOT_USER:-root}"
+            echo "DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}"
+
+            echo "USE_EXTERNAL_REDIS=${USE_REDIS}"
+            echo "REDIS_CACHE_URL=${REDIS_CACHE_URL}"
+            echo "REDIS_QUEUE_URL=${REDIS_QUEUE_URL}"
+            echo "REDIS_SOCKETIO_URL=${REDIS_SOCKETIO_URL}"
+
+            echo "CREATE_SITE_AT_BUILD=${CREATE_SITE}"
+            echo "SITE_NAME=${SITE_NAME}"
+
+            echo "TZ=${TZ}"
+            echo "LC_ALL=${LOCALE}"
+            echo "LANG=${LOCALE}"
+            echo "LANGUAGE=${LOCALE/:*/}:zh"
+            echo 'ARGS'
+          } >> "$GITHUB_OUTPUT"
+
+          echo "---- build-args preview ----"
+          cat "$GITHUB_OUTPUT"
 
       - name: Build & Push (GHCR)
         uses: docker/build-push-action@v6
@@ -106,26 +192,20 @@ jobs:
           platforms: linux/amd64
           pull: true
           push: true
-          # 强制覆盖=禁用缓存（触发彻底重建）；否则使用默认缓存
-          no-cache: ${{ steps.meta.outputs.force_overwrite == 'true' }}
+          no-cache: ${{ inputs.force_rebuild == true }}
+          build-args: ${{ steps.args.outputs.buildargs }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
-          # 这些 build-args 让你可以通过 repo 的 Variables/Secrets 配置外部 MySQL/Redis 或站点名等
-          build-args: |
-            USE_EXTERNAL_DB=${{ vars.USE_EXTERNAL_DB || 'no' }}
-            USE_EXTERNAL_REDIS=${{ vars.USE_EXTERNAL_REDIS || 'no' }}
-            CREATE_SITE_AT_BUILD=${{ vars.CREATE_SITE_AT_BUILD || 'yes' }}
-            DB_HOST=${{ vars.DB_HOST || '' }}
-            DB_PORT=${{ vars.DB_PORT || '3306' }}
-            DB_ROOT_USER=${{ vars.DB_ROOT_USER || 'root' }}
-            DB_ROOT_PASSWORD=${{ secrets.DB_ROOT_PASSWORD || '' }}
-            REDIS_CACHE_URL=${{ vars.REDIS_CACHE_URL || '' }}
-            REDIS_QUEUE_URL=${{ vars.REDIS_QUEUE_URL || '' }}
-            REDIS_SOCKETIO_URL=${{ vars.REDIS_SOCKETIO_URL || '' }}
-            SITE_NAME=${{ vars.SITE_NAME || 'site1.local' }}
-            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD || 'admin' }}
-            SITE_DB_PASSWORD=${{ secrets.SITE_DB_PASSWORD || 'Pass1234' }}
-            MARIADB_ROOT_PASSWORD=${{ secrets.MARIADB_ROOT_PASSWORD || 'Pass1234' }}
+
+      - name: Create & push git tag (optional)
+        if: ${{ inputs.push_git_tag == true && steps.meta.outputs.version != '' && github.ref_type != 'tag' }}
+        shell: bash
+        run: |
+          set -e
+          git config user.name  "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag -a "v${{ steps.meta.outputs.version }}" -m "Release v${{ steps.meta.outputs.version }}"
+          git push origin "v${{ steps.meta.outputs.version }}"
