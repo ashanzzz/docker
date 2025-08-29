@@ -1,0 +1,155 @@
+name: ERPNext AIO v15 镜像构建（对齐上游标签 & 可选强制更新）
+
+on:
+  push:
+    paths:
+      - "erpnext15/**"                          # 包含 erpnext15/aio/**
+      - ".github/workflows/erpnext15-build.yml" # 你改普通版工作流时也触发一次
+      - ".github/workflows/erpnext-aio-15.yml"
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: "强制更新（勾选则即使版本一致也构建）"
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: "20 3 * * *"   # 每天 03:20 UTC
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  BASE_IMAGE_NAME: ${{ github.repository_owner }}/erpnext15
+  AIO_IMAGE_NAME:  ${{ github.repository_owner }}/erpnext-aio-15
+  FRAPPE_PATH: https://github.com/frappe/frappe
+  FRAPPE_BRANCH: version-15
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: erpnext-aio-15-build
+      cancel-in-progress: true
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 jq / git
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq git
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 获取上游 ERPNext v15 最新 tag（多重兜底）
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="frappe/erpnext"
+          t="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                "https://api.github.com/repos/${repo}/tags?per_page=200" \
+                | jq -r '.[].name' | grep -E '^v15\.' | sort -V | tail -n1 || true)"
+          if [ -z "$t" ]; then
+            t="$(git ls-remote --tags https://github.com/${repo}.git \
+                | awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' \
+                | grep -E '^v15\.' | sort -V | tail -n1 || true)"
+          fi
+          if [ -z "$t" ]; then
+            sha="$(git ls-remote https://github.com/${repo}.git refs/heads/version-15 | awk '{print $1}' | head -n1 || true)"
+            [ -n "$sha" ] && t="sha-${sha:0:12}"
+          fi
+          [ -z "$t" ] && { echo "无法获取上游 v15 tag"; exit 1; }
+          echo "REMOTE_TAG=$t" >> $GITHUB_OUTPUT
+          echo "::notice title=上游Tag::$t"
+
+      - name: 展示 app.json 插件清单 & 预校验
+        id: apps
+        run: |
+          set -euo pipefail
+          test -f erpnext15/app.json
+          jq empty erpnext15/app.json
+          echo "== 插件清单（url @ branch） =="
+          jq -r '.[] | "- " + (.url|tostring) + " @ " + (.branch|tostring)' erpnext15/app.json
+          B64="$(base64 -w 0 erpnext15/app.json 2>/dev/null || base64 erpnext15/app.json)"
+          echo "$B64" | base64 -d > apps-test-output.json
+          jq -r '.[] | {url,branch}' apps-test-output.json >/dev/null
+          echo "APPS_JSON_BASE64=$B64" >> $GITHUB_OUTPUT
+
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name:（可选）跳过：AIO 镜像已存在且未勾选强制
+        id: skipcheck
+        continue-on-error: true
+        env:
+          AIO_IMAGE: ${{ env.REGISTRY }}/${{ env.AIO_IMAGE_NAME }}:${{ steps.upstream.outputs.REMOTE_TAG }}
+        run: |
+          set -euo pipefail
+          FORCE="${{ github.event.inputs.force_update || 'false' }}"
+          if [ "$FORCE" != "true" ] && docker buildx imagetools inspect "$AIO_IMAGE" >/dev/null 2>&1; then
+            echo "::notice title=跳过构建::镜像已存在 $AIO_IMAGE"
+            exit 123
+          fi
+
+      - name: 构建并推送 基础镜像（images/layered/Containerfile）
+        if: ${{ steps.skipcheck.outcome != 'failure' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: https://github.com/frappe/frappe_docker.git#main
+          file: images/layered/Containerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            FRAPPE_PATH=${{ env.FRAPPE_PATH }}
+            FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+            APPS_JSON_BASE64=${{ steps.apps.outputs.APPS_JSON_BASE64 }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ steps.upstream.outputs.REMOTE_TAG }}
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:latest-v15
+          provenance: false
+          sbom: false
+          no-cache: ${{ github.event.inputs.force_update == true }}
+
+      - name: 构建并推送 AIO 镜像（基于上一步）
+        if: ${{ steps.skipcheck.outcome != 'failure' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: erpnext15/aio/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ steps.upstream.outputs.REMOTE_TAG }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.AIO_IMAGE_NAME }}:${{ steps.upstream.outputs.REMOTE_TAG }}
+            ${{ env.REGISTRY }}/${{ env.AIO_IMAGE_NAME }}:latest-aio-v15
+          provenance: false
+          sbom: false
+          no-cache: ${{ github.event.inputs.force_update == true }}
+
+      - name: 构建后验收（apps 列表 + apps.json sha256）
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          IMG="${{ env.REGISTRY }}/${{ env.AIO_IMAGE_NAME }}:${{ steps.upstream.outputs.REMOTE_TAG }}"
+          docker pull "$IMG" >/dev/null
+          echo "本地 apps.json sha256:"
+          sha256sum apps-test-output.json | awk '{print $1}'
+          echo "容器内检查："
+          docker run --rm --entrypoint bash "$IMG" -lc '
+            set -e
+            cd /home/frappe/frappe-bench
+            echo "[apps 目录]"; ls -1 apps | sort
+            echo "[apps.json sha256]"; sha256sum /opt/frappe/apps.json | awk "{print \$1}"
+          '
