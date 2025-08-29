@@ -5,6 +5,7 @@ on:
     paths:
       - "erpnext15/**"
       - ".github/workflows/erpnext15-build.yml"
+      - ".github/workflows/build-erpnext15.yml"   # ← 新增：该文件被修改也触发
   workflow_dispatch:
     inputs:
       force_update:
