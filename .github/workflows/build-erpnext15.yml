@@ -1,250 +1,241 @@
-name: Build ERPNext 15 (All-in-One) to GHCR
+name: ERPNext v15 镜像构建（含跳过/强制更新逻辑）
 
 on:
-  schedule:
-    - cron: "0 0 * * 1"
+  push:
+    paths:
+      - "erpnext15/**"
+      - ".github/workflows/erpnext15-build.yml"
   workflow_dispatch:
     inputs:
-      force_build:
-        description: "是否强制构建并覆盖同版本镜像（true/false）"
+      force_update:
+        description: "手动触发时是否强制更新（true/false），默认 false"
         required: false
         default: "false"
-        type: choice
-        options: ["false", "true"]
-      frappe_branch:
-        description: "临时指定 frappe 分支（留空则用文件或默认 version-15）"
+      tag:
+        description: "镜像TAG（缺省将用上游版本号，比如 v15.48.4）"
         required: false
-        type: string
-      erpnext_branch:
-        description: "临时指定 erpnext 分支（留空则用文件或默认 version-15）"
+      platforms:
+        description: "目标平台（默认 linux/amd64,linux/arm64）"
         required: false
-        type: string
+        default: "linux/amd64,linux/arm64"
+  schedule:
+    # 每天 03:20 UTC 定时检查一次（可按需修改/删除）
+    - cron: "20 3 * * *"
+
+permissions:
+  contents: read
+  packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/erpnext15
-  # 默认分支（与原脚本保持一致）
-  FRAPPE_BRANCH_DEFAULT: version-15
-  ERPNEXT_BRANCH_DEFAULT: version-15
+  # ======= 你可以按需修改的默认项 =======
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/erpnext15
+  FRAPPE_PATH: https://github.com/frappe/frappe
+  FRAPPE_BRANCH: version-15
+  # =====================================
 
 jobs:
-  check:
-    name: Decide if build is needed
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      should_build: ${{ steps.decide.outputs.should_build }}
-      version_key:  ${{ steps.version.outputs.version_key }}
-      # 传给下个 job 的动态路径 & 分支/哈希信息
-      workdir: ${{ steps.detect.outputs.workdir }}
-      dockerfile_path: ${{ steps.detect.outputs.dockerfile_path }}
-      last_version_file: ${{ steps.detect.outputs.last_version_file }}
-      frappe_branch_file: ${{ steps.detect.outputs.frappe_branch_file }}
-      erpnext_branch_file: ${{ steps.detect.outputs.erpnext_branch_file }}
-      frappe_branch: ${{ steps.branches.outputs.frappe_branch }}
-      erpnext_branch: ${{ steps.branches.outputs.erpnext_branch }}
-      frappe_sha: ${{ steps.fetch.outputs.frappe_sha }}
-      erpnext_sha: ${{ steps.fetch.outputs.erpnext_sha }}
-    steps:
-      - uses: actions/checkout@v4
+    concurrency:
+      group: erpnext15-build
+      cancel-in-progress: true
 
-      - name: Detect paths (docker/erpnext15 or erpnext15 at repo root)
-        id: detect
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 jq（用于解析 JSON）
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: 登录镜像仓库（默认 GHCR）
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 读取本地配置（FORCE_UPDATE / ERPNEXT_VERSION）
+        id: localcfg
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="${{ github.workspace }}"
-          if [ -d "$ROOT/docker/erpnext15" ]; then
-            WD="docker/erpnext15"
-          elif [ -d "$ROOT/erpnext15" ]; then
-            WD="erpnext15"
-          else
-            echo "❌ Neither $ROOT/docker/erpnext15 nor $ROOT/erpnext15 exists."
-            echo "   当前仓库结构："; ls -la "$ROOT"
+          # 默认值：不强制更新
+          FORCE_UPDATE="false"
+          LOCAL_VERSION="unknown"
+
+          # 从 workflow_dispatch 输入覆盖 FORCE_UPDATE
+          if [[ "${{ github.event.inputs.force_update || '' }}" == "true" ]]; then
+            FORCE_UPDATE="true"
+          fi
+
+          # 从 erpnext15/.env.example 读取（如果存在这些键）
+          if [[ -f "erpnext15/.env.example" ]]; then
+            # 读取 FORCE_UPDATE（若配置文件里给了）
+            if grep -qE '^FORCE_UPDATE=' erpnext15/.env.example; then
+              # 若手动触发传入了 true，则以手动为准；否则用文件值
+              if [[ "$FORCE_UPDATE" != "true" ]]; then
+                FORCE_UPDATE="$(grep -E '^FORCE_UPDATE=' erpnext15/.env.example | head -n1 | cut -d= -f2 | tr -d '\r' | tr 'A-Z' 'a-z')"
+                [[ -z "$FORCE_UPDATE" ]] && FORCE_UPDATE="false"
+              fi
+            fi
+            # 读取 ERPNEXT_VERSION（本地声明的版本号）
+            if grep -qE '^ERPNEXT_VERSION=' erpnext15/.env.example; then
+              LOCAL_VERSION="$(grep -E '^ERPNEXT_VERSION=' erpnext15/.env.example | head -n1 | cut -d= -f2 | tr -d '\r' )"
+              [[ -z "$LOCAL_VERSION" ]] && LOCAL_VERSION="unknown"
+            fi
+          fi
+
+          echo "FORCE_UPDATE=$FORCE_UPDATE" | tee -a $GITHUB_OUTPUT
+          echo "LOCAL_VERSION=$LOCAL_VERSION" | tee -a $GITHUB_OUTPUT
+
+      - name: 获取上游 ERPNext v15 最新版本号（多重兜底）
+        id: upstream
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_REPO="frappe/erpnext"
+          REMOTE_TAG=""
+
+          echo "== 优先方式：GitHub API 拉取 v15.* tags =="
+          # 取最多 200 条 tag，然后筛 v15.*，按语义版本排序，取最后一个
+          # 使用 GITHUB_TOKEN 提高速率限制
+          RESPONSE="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=200" || true)"
+          if [[ -n "$RESPONSE" ]]; then
+            REMOTE_TAG="$(echo "$RESPONSE" | jq -r '.[].name' | grep -E '^v15\.' | sort -V | tail -n1 || true)"
+          fi
+
+          if [[ -z "$REMOTE_TAG" ]]; then
+            echo "== 兜底1：git ls-remote --tags 解析 v15.* =="
+            REMOTE_TAG="$(git ls-remote --tags https://github.com/${UPSTREAM_REPO}.git | \
+              awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' | grep -E '^v15\.' | sort -V | tail -n1 || true)"
+          fi
+
+          if [[ -z "$REMOTE_TAG" ]]; then
+            echo "== 兜底2：取 version-15 分支最新提交 SHA =="
+            REMOTE_SHA="$(git ls-remote https://github.com/${UPSTREAM_REPO}.git refs/heads/version-15 | awk '{print $1}' | head -n1 || true)"
+            if [[ -n "$REMOTE_SHA" ]]; then
+              REMOTE_TAG="sha-${REMOTE_SHA:0:12}"
+            fi
+          fi
+
+          if [[ -z "$REMOTE_TAG" ]]; then
+            echo "无法获取上游版本号，终止。"
             exit 1
           fi
-          echo "✅ Using workdir: $WD"
-          echo "workdir=$WD" >> "$GITHUB_OUTPUT"
-          echo "dockerfile_path=$ROOT/$WD/Dockerfile" >> "$GITHUB_OUTPUT"
-          echo "frappe_branch_file=$ROOT/$WD/.frappe_branch" >> "$GITHUB_OUTPUT"
-          echo "erpnext_branch_file=$ROOT/$WD/.erpnext_branch" >> "$GITHUB_OUTPUT"
-          echo "last_version_file=$ROOT/$WD/.last_version" >> "$GITHUB_OUTPUT"
 
-      - name: Show structure
-        shell: bash
-        run: |
-          echo "Repo root:"
-          ls -la
-          echo "Chosen workdir: ${{ steps.detect.outputs.workdir }}"
-          ls -la "${{ steps.detect.outputs.workdir }}"
+          echo "REMOTE_TAG=$REMOTE_TAG" | tee -a $GITHUB_OUTPUT
 
-      - name: Verify Dockerfile exists
-        shell: bash
-        run: |
-          test -f "${{ steps.detect.outputs.dockerfile_path }}" || (echo "Dockerfile not found at ${{ steps.detect.outputs.dockerfile_path }}" && exit 1)
-
-      - name: Resolve branches (inputs > file > default)
-        id: branches
-        shell: bash
-        run: |
-          set -euo pipefail
-          FRAPPE_INPUT="${{ github.event.inputs.frappe_branch || '' }}"
-          ERPNEXT_INPUT="${{ github.event.inputs.erpnext_branch || '' }}"
-
-          FRAPPE_FILE_VAL=""
-          ERPNEXT_FILE_VAL=""
-          if [[ -f "${{ steps.detect.outputs.frappe_branch_file }}" ]]; then
-            FRAPPE_FILE_VAL="$(cat "${{ steps.detect.outputs.frappe_branch_file }}" | tr -d ' \t\r\n')"
-          fi
-          if [[ -f "${{ steps.detect.outputs.erpnext_branch_file }}" ]]; then
-            ERPNEXT_FILE_VAL="$(cat "${{ steps.detect.outputs.erpnext_branch_file }}" | tr -d ' \t\r\n')"
-          fi
-
-          FRAPPE_DEF="${{ env.FRAPPE_BRANCH_DEFAULT }}"
-          ERPNEXT_DEF="${{ env.ERPNEXT_BRANCH_DEFAULT }}"
-
-          FRAPPE_BRANCH="${FRAPPE_INPUT:-${FRAPPE_FILE_VAL:-$FRAPPE_DEF}}"
-          ERPNEXT_BRANCH="${ERPNEXT_INPUT:-${ERPNEXT_FILE_VAL:-$ERPNEXT_DEF}}"
-
-          echo "Use frappe branch: ${FRAPPE_BRANCH}"
-          echo "Use erpnext branch: ${ERPNEXT_BRANCH}"
-
-          echo "frappe_branch=${FRAPPE_BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "erpnext_branch=${ERPNEXT_BRANCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch latest upstream SHAs (frappe & erpnext)
-        id: fetch
-        shell: bash
-        run: |
-          set -euo pipefail
-          FRAPPE_BRANCH="${{ steps.branches.outputs.frappe_branch }}"
-          ERPNEXT_BRANCH="${{ steps.branches.outputs.erpnext_branch }}"
-
-          get_sha () {
-            local repo="$1"; local branch="$2"
-            curl -fsSL "https://api.github.com/repos/${repo}/commits?sha=${branch}&per_page=1" \
-              | jq -r '.[0].sha' 2>/dev/null || true
-          }
-
-          FRAPPE_SHA="$(get_sha 'frappe/frappe' "${FRAPPE_BRANCH}")"
-          ERPNEXT_SHA="$(get_sha 'frappe/erpnext' "${ERPNEXT_BRANCH}")"
-
-          [[ -n "${FRAPPE_SHA}" && "${FRAPPE_SHA}" != "null" ]] || FRAPPE_SHA="ffffffffffffffffffffffffffffffffffffffff"
-          [[ -n "${ERPNEXT_SHA}" && "${ERPNEXT_SHA}" != "null" ]] || ERPNEXT_SHA="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-
-          echo "frappe_sha=${FRAPPE_SHA}"   >> "$GITHUB_OUTPUT"
-          echo "erpnext_sha=${ERPNEXT_SHA}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute version key (double lock)
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          short () { echo "${1}" | cut -c1-7; }
-
-          FRAPPE_SHA="${{ steps.fetch.outputs.frappe_sha }}"
-          ERPNEXT_SHA="${{ steps.fetch.outputs.erpnext_sha }}"
-
-          DF_SHA="$(sha256sum "${{ steps.detect.outputs.dockerfile_path }}" | cut -c1-8)"
-          INST_SHA="none"
-          if [[ -f "${{ steps.detect.outputs.workdir }}/installdata/install-erpnext15.sh" ]]; then
-            INST_SHA="$(sha256sum "${{ steps.detect.outputs.workdir }}/installdata/install-erpnext15.sh" | cut -c1-8)"
-          fi
-
-          FRAPPE_BRANCH="${{ steps.branches.outputs.frappe_branch }}"
-          ERPNEXT_BRANCH="${{ steps.branches.outputs.erpnext_branch }}"
-
-          VERSION_KEY="frappe-${FRAPPE_BRANCH}@$(short "$FRAPPE_SHA")__erpnext-${ERPNEXT_BRANCH}@$(short "$ERPNEXT_SHA")__df-${DF_SHA}__inst-${INST_SHA}"
-          echo "VERSION_KEY=${VERSION_KEY}"
-          echo "version_key=${VERSION_KEY}" >> "$GITHUB_OUTPUT"
-
-      - name: Read last_version & decide
+      - name: 决策：是否需要构建
         id: decide
         shell: bash
         run: |
           set -euo pipefail
-          FORCE="${{ github.event.inputs.force_build || 'false' }}"
-          VERSION_KEY="${{ steps.version.outputs.version_key }}"
-          LAST_FILE="${{ steps.detect.outputs.last_version_file }}"
+          FORCE_UPDATE="${{ steps.localcfg.outputs.FORCE_UPDATE }}"
+          LOCAL_VERSION="${{ steps.localcfg.outputs.LOCAL_VERSION }}"
+          REMOTE_TAG="${{ steps.upstream.outputs.REMOTE_TAG }}"
 
-          CUR="none"
-          if [[ -f "${LAST_FILE}" ]]; then
-            CUR="$(cat "${LAST_FILE}" | tr -d '\r\n')"
-          fi
+          SHOULD_BUILD="true"
+          REASON=""
 
-          echo "Recorded: ${CUR}"
-          echo "Candidate: ${VERSION_KEY}"
-
-          if [[ "${FORCE}" == "true" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-          elif [[ "${CUR}" != "${VERSION_KEY}" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          # 规则：
+          # 1) 如果本地声明版本 与 上游版本一致：
+          #    - FORCE_UPDATE=false -> 跳过
+          #    - FORCE_UPDATE=true  -> 仍然构建
+          # 2) 如果不一致 -> 构建
+          if [[ "$LOCAL_VERSION" == "$REMOTE_TAG" ]]; then
+            if [[ "$FORCE_UPDATE" == "true" ]]; then
+              SHOULD_BUILD="true"
+              REASON="一致但 FORCE_UPDATE=true，执行构建。"
+            else
+              SHOULD_BUILD="false"
+              REASON="一致且 FORCE_UPDATE=false，跳过构建。"
+            fi
           else
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            SHOULD_BUILD="true"
+            REASON="不一致（本地: ${LOCAL_VERSION} / 上游: ${REMOTE_TAG}），执行构建。"
           fi
 
-  build:
-    name: Build & Push
-    needs: check
-    if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
+          echo "SHOULD_BUILD=$SHOULD_BUILD" | tee -a $GITHUB_OUTPUT
+          echo "DECISION_REASON=$REASON" | tee -a $GITHUB_OUTPUT
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: 输出决策
+        run: |
+          echo "FORCE_UPDATE=${{ steps.localcfg.outputs.FORCE_UPDATE }}"
+          echo "LOCAL_VERSION=${{ steps.localcfg.outputs.LOCAL_VERSION }}"
+          echo "REMOTE_TAG=${{ steps.upstream.outputs.REMOTE_TAG }}"
+          echo "SHOULD_BUILD=${{ steps.decide.outputs.SHOULD_BUILD }}"
+          echo "原因：${{ steps.decide.outputs.DECISION_REASON }}"
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: 若跳过则提前结束
+        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'false' && (github.event_name != 'workflow_dispatch') }}
+        run: |
+          echo "跳过构建（非手动触发）。"
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker meta
+      - name: 计算镜像 TAG 与平台
+        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=raw,value=${{ needs.check.outputs.version_key }}
-            type=raw,value=frappe-${{ needs.check.outputs.frappe_branch }}
-            type=raw,value=erpnext-${{ needs.check.outputs.erpnext_branch }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.title=ERPNext 15 All-in-One
-            org.opencontainers.image.description=All-in-one image with pinned SHAs
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.check.outputs.version_key }}
-
-      - name: Build & Push (multi-arch)
-        uses: docker/build-push-action@v5
-        with:
-          context: ${{ needs.check.outputs.workdir }}
-          file: ${{ needs.check.outputs.dockerfile_path }}
-          push: true
-          platforms: linux/amd64,linux/arm64
-          no-cache: ${{ github.event.inputs.force_build == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Update .last_version & commit back
         shell: bash
         run: |
           set -euo pipefail
-          VERSION_KEY="${{ needs.check.outputs.version_key }}"
-          REL="${{ needs.check.outputs.workdir }}/.last_version"
-          echo "${VERSION_KEY}" > "${REL}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${REL}"
-          git commit -m "chore(erpnext15): record build ${VERSION_KEY}" || echo "No changes to commit"
-          git push
+          REMOTE_TAG="${{ steps.upstream.outputs.REMOTE_TAG }}"
+          INPUT_TAG="${{ github.event.inputs.tag || '' }}"
+          PLATFORMS="${{ github.event.inputs.platforms || '' }}"
+          [[ -z "$PLATFORMS" ]] && PLATFORMS="linux/amd64,linux/arm64"
+
+          # 若手动指定 tag 则用输入，否则默认用上游版本号
+          FINAL_TAG="$REMOTE_TAG"
+          if [[ -n "$INPUT_TAG" ]]; then
+            FINAL_TAG="$INPUT_TAG"
+          fi
+
+          echo "FINAL_TAG=$FINAL_TAG" | tee -a $GITHUB_OUTPUT
+          echo "PLATFORMS=$PLATFORMS" | tee -a $GITHUB_OUTPUT
+          echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$FINAL_TAG" | tee -a $GITHUB_OUTPUT
+
+      - name: Base64 编码 erpnext15/app.json → APPS_JSON_BASE64
+        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
+        id: apps
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f "erpnext15/app.json" ]]; then
+            echo "缺少 erpnext15/app.json"
+            exit 1
+          fi
+          # 校验 JSON 合法
+          jq empty erpnext15/app.json
+          # 单行 Base64
+          echo "APPS_JSON_BASE64=$(base64 -w 0 erpnext15/app.json)" >> $GITHUB_OUTPUT
+
+      - name: 设置 Buildx
+        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建并推送（layered Containerfile）
+        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
+        uses: docker/build-push-action@v6
+        with:
+          # 直接使用上游 frappe_docker 作为构建上下文
+          context: https://github.com/frappe/frappe_docker.git#main
+          file: images/layered/Containerfile
+          push: true
+          platforms: ${{ steps.meta.outputs.PLATFORMS }}
+          build-args: |
+            FRAPPE_PATH=${{ env.FRAPPE_PATH }}
+            FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+            APPS_JSON_BASE64=${{ steps.apps.outputs.APPS_JSON_BASE64 }}
+          tags: |
+            ${{ steps.meta.outputs.IMAGE }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-v15
+
+      - name: 构建结果
+        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          docker buildx imagetools inspect "${{ steps.meta.outputs.IMAGE }}"
