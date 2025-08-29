@@ -71,21 +71,3 @@ jobs:
             ADMIN_PASSWORD=admin
             SITE_DB_PASSWORD=Pass1234
             MARIADB_ROOT_PASSWORD=Pass1234
-
-      - name: Build and push (DockerHub) - optional
-        if: ${{ steps.meta.outputs.dh != '' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: erpnext15/aio/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.dh }}
-          build-args: |
-            CHINA_MIRRORS=no
-            FRAPPE_BRANCH=version-15
-            ERPNEXT_BRANCH=version-15
-            SITE_NAME=site1.local
-            ADMIN_PASSWORD=admin
-            SITE_DB_PASSWORD=Pass1234
-            MARIADB_ROOT_PASSWORD=Pass1234
