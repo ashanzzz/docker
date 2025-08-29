@@ -2,35 +2,34 @@ name: Build ERPNext AIO Image
 
 on:
   push:
-    branches: [ "main", "master" ]
-    tags:     [ "v*" ]
+    branches: [ main, master ]
+    tags: [ 'v*' ]           # 打 v* tag 时也会触发（并自动用该版本）
   workflow_dispatch:
     inputs:
       version:
-        description: "镜像版本号，如 15.77.0。若填写且开启 push_git_tag，将在仓库创建/更新 git 标签 v<version>。"
+        description: '版本号（如 15.77.0）。若留空且用 tag 触发，会用 tag；否则只发 latest'
         required: false
-        default: ""
       push_git_tag:
-        description: "当填写 version 时，是否在仓库创建并推送 v<version> 标签"
+        description: '构建成功后，把该版本回推为 Git tag（v{version}）'
         type: boolean
-        required: false
         default: true
       force_rebuild:
-        description: "强制更新：忽略构建缓存（no-cache）"
+        description: '强制全量重建（禁用缓存）'
         type: boolean
-        required: false
         default: false
-      china_mirrors:
-        description: "构建时使用国内镜像 (yes/no)"
-        required: false
-        default: "no"
+
+permissions:
+  contents: write     # 回推 Git tag 需要
+  packages: write     # 推 GHCR 需要
+
+concurrency:
+  group: erpnext-aio-15-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write     # 需要创建/推送 git tag
-      packages: write     # 推送 GHCR
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,91 +47,56 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive version, tags & metadata
+      - name: Derive version & tags
         id: meta
-        env:
-          INP_VERSION: ${{ github.event.inputs.version }}
-          CHINA_MIRRORS: ${{ github.event.inputs.china_mirrors }}
+        shell: bash
         run: |
-          set -e
-          # 版本来源优先级：手动输入 > 推送 tag(v*) > rolling
-          VERSION="${INP_VERSION}"
-          if [[ -z "$VERSION" ]]; then
-            if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-              VERSION="${GITHUB_REF_NAME#v}"
-            else
-              VERSION="rolling"
-            fi
-          fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext15-aio"
 
-          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          IMAGE="ghcr.io/${OWNER_LC}/erpnext15-aio"
-
-          TAGS="${IMAGE}:latest"
-          if [[ "$VERSION" != "rolling" ]]; then
-            TAGS="${TAGS},${IMAGE}:${VERSION},${IMAGE}:v${VERSION}"
-          fi
-          echo "TAGS=$TAGS" >> $GITHUB_ENV
-
-          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "CREATED=$CREATED" >> $GITHUB_ENV
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-
-          if [[ "${CHINA_MIRRORS}" == "yes" ]]; then
-            echo "CHINA_MIRRORS=yes" >> $GITHUB_ENV
+          # 版本优先级：手动输入 > tag 触发 > 空
+          IN="${{ inputs.version || '' }}"
+          if [[ -n "$IN" ]]; then
+            VER="$IN"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VER="${GITHUB_REF_NAME#v}"   # 去掉前缀 v
           else
-            echo "CHINA_MIRRORS=no" >> $GITHUB_ENV
+            VER=""
           fi
 
-      - name: Create git tag v<version> (when asked)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' && inputs.push_git_tag == true }}
-        uses: actions/github-script@v7
-        env:
-          VERSION: ${{ env.VERSION }}
-        with:
-          script: |
-            const version = process.env.VERSION;
-            const tagRef = `refs/tags/v${version}`;
-            try {
-              await github.rest.git.getRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `tags/v${version}`
-              });
-              core.info(`Git tag v${version} 已存在，跳过创建。`);
-            } catch (e) {
-              await github.rest.git.createRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: tagRef,
-                sha: context.sha
-              });
-              core.info(`已创建 git tag v${version}。`);
-            }
+          # 组装 tags
+          TAGS="${IMAGE}:latest"
+          if [[ -n "$VER" ]]; then
+            TAGS="${TAGS},${IMAGE}:${VER},${IMAGE}:v${VER}"
+          fi
 
-      - name: Build and push (GHCR)
+          echo "image=${IMAGE}"   >> "$GITHUB_OUTPUT"
+          echo "version=${VER}"   >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"     >> "$GITHUB_OUTPUT"
+
+      - name: Build & Push (GHCR)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: erpnext15/aio/Dockerfile
+          context: ./erpnext15
+          file: ./erpnext15/Dockerfile
           platforms: linux/amd64
+          pull: true
           push: true
-          no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
-          tags: ${{ env.TAGS }}
+          # 强制更新逻辑
+          no-cache: ${{ inputs.force_rebuild == true }}
+          # 你这两文件方案会在 Dockerfile 里调用 installdata/install-erpnext15.sh 完成所有安装
+          tags: ${{ steps.meta.outputs.tags }}
           labels: |
-            org.opencontainers.image.title=ERPNext AIO
-            org.opencontainers.image.description=All-in-one ERPNext with MariaDB & Redis. Ready to run.
-            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ env.CREATED }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          build-args: |
-            CHINA_MIRRORS=${{ env.CHINA_MIRRORS }}
-            FRAPPE_BRANCH=version-15
-            ERPNEXT_BRANCH=version-15
-            SITE_NAME=site1.local
-            ADMIN_PASSWORD=admin
-            SITE_DB_PASSWORD=Pass1234
-            MARIADB_ROOT_PASSWORD=Pass1234
-            WEB_PORT=80
+
+      - name: Create & push git tag (optional)
+        if: ${{ inputs.push_git_tag == true && steps.meta.outputs.version != '' && github.ref_type != 'tag' }}
+        shell: bash
+        run: |
+          set -e
+          git config user.name  "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag -a "v${{ steps.meta.outputs.version }}" -m "Release v${{ steps.meta.outputs.version }}"
+          git push origin "v${{ steps.meta.outputs.version }}"
