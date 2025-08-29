@@ -3,24 +3,24 @@ name: Build ERPNext AIO Image
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]           # 打 v* tag 时也会触发（并自动用该版本）
+    tags: [ 'v*' ]    # 打 v* tag 触发时，会用这个 tag 作为版本号
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（如 15.77.0）。若留空且用 tag 触发，会用 tag；否则只发 latest'
+        description: '版本号（如 15.77.0）。留空：tag 触发用 tag；否则自动生成 YYYY.MM.DD-<run>'
         required: false
-      push_git_tag:
-        description: '构建成功后，把该版本回推为 Git tag（v{version}）'
-        type: boolean
-        default: true
-      force_rebuild:
-        description: '强制全量重建（禁用缓存）'
+      push_latest:
+        description: '是否同时打 latest 标签'
         type: boolean
         default: false
+      force_overwrite:
+        description: '是否允许覆盖已有同名版本（true=允许覆盖；false=存在则失败）'
+        type: boolean
+        default: true
 
 permissions:
-  contents: write     # 回推 Git tag 需要
-  packages: write     # 推 GHCR 需要
+  contents: read
+  packages: write
 
 concurrency:
   group: erpnext-aio-15-${{ github.ref }}
@@ -52,27 +52,45 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext15-aio"
 
-          # 版本优先级：手动输入 > tag 触发 > 空
+          OWNER_LC="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER_LC}/erpnext15-aio"
+
+          # 版本优先级：手动输入 > tag 触发 > 自动生成
           IN="${{ inputs.version || '' }}"
           if [[ -n "$IN" ]]; then
             VER="$IN"
           elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VER="${GITHUB_REF_NAME#v}"   # 去掉前缀 v
+            VER="${GITHUB_REF_NAME#v}"     # 去掉前缀 v
           else
-            VER=""
+            VER="$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}"
           fi
 
-          # 组装 tags
-          TAGS="${IMAGE}:latest"
-          if [[ -n "$VER" ]]; then
-            TAGS="${TAGS},${IMAGE}:${VER},${IMAGE}:v${VER}"
+          # 组装 tags：始终包含版本标签；按需再附带 latest
+          TAGS="${IMAGE}:${VER}"
+          if [[ "${{ inputs.push_latest }}" == "true" ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
           fi
 
           echo "image=${IMAGE}"   >> "$GITHUB_OUTPUT"
           echo "version=${VER}"   >> "$GITHUB_OUTPUT"
           echo "tags=${TAGS}"     >> "$GITHUB_OUTPUT"
+          echo "Computed tags: ${TAGS}"
+
+      - name: Guard: disallow overwrite if tag exists
+        if: ${{ inputs.force_overwrite == false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.meta.outputs.image }}"
+          VER="${{ steps.meta.outputs.version }}"
+          if docker buildx imagetools inspect "${IMG}:${VER}" >/dev/null 2>&1; then
+            echo "❌ 镜像标签已存在：${IMG}:${VER}"
+            echo "如需覆盖，请在触发工作流时把 force_overwrite 设为 true。"
+            exit 1
+          else
+            echo "✅ 未发现同名版本标签，继续构建。"
+          fi
 
       - name: Build & Push (GHCR)
         uses: docker/build-push-action@v6
@@ -82,21 +100,10 @@ jobs:
           platforms: linux/amd64
           pull: true
           push: true
-          # 强制更新逻辑
-          no-cache: ${{ inputs.force_rebuild == true }}
-          # 你这两文件方案会在 Dockerfile 里调用 installdata/install-erpnext15.sh 完成所有安装
+          # 强制更新=禁用缓存；否则用默认缓存策略
+          no-cache: ${{ inputs.force_overwrite == true }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
-
-      - name: Create & push git tag (optional)
-        if: ${{ inputs.push_git_tag == true && steps.meta.outputs.version != '' && github.ref_type != 'tag' }}
-        shell: bash
-        run: |
-          set -e
-          git config user.name  "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git tag -a "v${{ steps.meta.outputs.version }}" -m "Release v${{ steps.meta.outputs.version }}"
-          git push origin "v${{ steps.meta.outputs.version }}"
