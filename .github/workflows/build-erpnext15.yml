@@ -230,4 +230,21 @@ jobs:
           file: ${{ needs.check.outputs.dockerfile_path }}
           push: true
           platforms: linux/amd64,linux/arm64
-          no
+          no-cache: ${{ github.event.inputs.force_build == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update .last_version & commit back
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_KEY="${{ needs.check.outputs.version_key }}"
+          REL="${{ needs.check.outputs.workdir }}/.last_version"
+          echo "${VERSION_KEY}" > "${REL}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${REL}"
+          git commit -m "chore(erpnext15): record build ${VERSION_KEY}" || echo "No changes to commit"
+          git push
