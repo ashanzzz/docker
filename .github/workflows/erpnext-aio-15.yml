@@ -55,10 +55,7 @@ jobs:
           CHINA_MIRRORS: ${{ github.event.inputs.china_mirrors }}
         run: |
           set -e
-          # 1) 版本来源优先级：
-          #    a) workflow_dispatch 输入 version
-          #    b) 推送的 git 标签 v*
-          #    c) rolling（滚动）
+          # 版本来源优先级：手动输入 > 推送 tag(v*) > rolling
           VERSION="${INP_VERSION}"
           if [[ -z "$VERSION" ]]; then
             if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
@@ -69,22 +66,19 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-          # 2) 镜像名（统一我们的风格）
           OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/${OWNER_LC}/erpnext15-aio"
 
-          # 3) tags：始终推 latest；若有版本号，额外推 <version> 与 v<version>
           TAGS="${IMAGE}:latest"
           if [[ "$VERSION" != "rolling" ]]; then
             TAGS="${TAGS},${IMAGE}:${VERSION},${IMAGE}:v${VERSION}"
           fi
           echo "TAGS=$TAGS" >> $GITHUB_ENV
 
-          # 4) 其它元信息
           CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "CREATED=$CREATED" >> $GITHUB_ENV
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          # 5) 国内镜像开关（传递给 Dockerfile）
+
           if [[ "${CHINA_MIRRORS}" == "yes" ]]; then
             echo "CHINA_MIRRORS=yes" >> $GITHUB_ENV
           else
@@ -141,3 +135,4 @@ jobs:
             ADMIN_PASSWORD=admin
             SITE_DB_PASSWORD=Pass1234
             MARIADB_ROOT_PASSWORD=Pass1234
+            WEB_PORT=80
