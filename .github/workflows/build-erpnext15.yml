@@ -2,7 +2,6 @@ name: Build ERPNext 15 (All-in-One) to GHCR
 
 on:
   schedule:
-    # 每周一 00:00 UTC 例行检查并必要时构建
     - cron: "0 0 * * 1"
   workflow_dispatch:
     inputs:
@@ -12,7 +11,6 @@ on:
         default: "false"
         type: choice
         options: ["false", "true"]
-      # 这两个分支输入是可选的；如不填，将读取仓库内分支文件或默认值
       frappe_branch:
         description: "临时指定 frappe 分支（留空则用文件或默认 version-15）"
         required: false
@@ -24,14 +22,7 @@ on:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/erpnext15
-  WORKDIR: docker/erpnext15
-  DOCKERFILE_PATH: ${{ github.workspace }}/docker/erpnext15/Dockerfile
-
-  # 文件化分支的本地“配置点”（可选，不存在就忽略）
-  FRAPPE_BRANCH_FILE: ${{ github.workspace }}/docker/erpnext15/.frappe_branch
-  ERPNEXT_BRANCH_FILE: ${{ github.workspace }}/docker/erpnext15/.erpnext_branch
-
-  # 默认分支（与原 install 脚本保持一致）
+  # 默认分支（与原脚本保持一致）
   FRAPPE_BRANCH_DEFAULT: version-15
   ERPNEXT_BRANCH_DEFAULT: version-15
 
@@ -41,7 +32,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
-      version_key:  ${{ steps.decide.outputs.version_key }}
+      version_key:  ${{ steps.version.outputs.version_key }}
+      # 传给下个 job 的动态路径 & 分支/哈希信息
+      workdir: ${{ steps.detect.outputs.workdir }}
+      dockerfile_path: ${{ steps.detect.outputs.dockerfile_path }}
+      last_version_file: ${{ steps.detect.outputs.last_version_file }}
+      frappe_branch_file: ${{ steps.detect.outputs.frappe_branch_file }}
+      erpnext_branch_file: ${{ steps.detect.outputs.erpnext_branch_file }}
       frappe_branch: ${{ steps.branches.outputs.frappe_branch }}
       erpnext_branch: ${{ steps.branches.outputs.erpnext_branch }}
       frappe_sha: ${{ steps.fetch.outputs.frappe_sha }}
@@ -49,41 +46,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect paths (docker/erpnext15 or erpnext15 at repo root)
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${{ github.workspace }}"
+          if [ -d "$ROOT/docker/erpnext15" ]; then
+            WD="docker/erpnext15"
+          elif [ -d "$ROOT/erpnext15" ]; then
+            WD="erpnext15"
+          else
+            echo "❌ Neither $ROOT/docker/erpnext15 nor $ROOT/erpnext15 exists."
+            echo "   当前仓库结构："; ls -la "$ROOT"
+            exit 1
+          fi
+          echo "✅ Using workdir: $WD"
+          echo "workdir=$WD" >> "$GITHUB_OUTPUT"
+          echo "dockerfile_path=$ROOT/$WD/Dockerfile" >> "$GITHUB_OUTPUT"
+          echo "frappe_branch_file=$ROOT/$WD/.frappe_branch" >> "$GITHUB_OUTPUT"
+          echo "erpnext_branch_file=$ROOT/$WD/.erpnext_branch" >> "$GITHUB_OUTPUT"
+          echo "last_version_file=$ROOT/$WD/.last_version" >> "$GITHUB_OUTPUT"
+
       - name: Show structure
+        shell: bash
         run: |
           echo "Repo root:"
           ls -la
-          echo "erpnext15 dir:"
-          ls -la "${{ env.WORKDIR }}"
+          echo "Chosen workdir: ${{ steps.detect.outputs.workdir }}"
+          ls -la "${{ steps.detect.outputs.workdir }}"
 
       - name: Verify Dockerfile exists
+        shell: bash
         run: |
-          test -f "${{ env.DOCKERFILE_PATH }}" || (echo "Dockerfile not found at ${{ env.DOCKERFILE_PATH }}" && exit 1)
+          test -f "${{ steps.detect.outputs.dockerfile_path }}" || (echo "Dockerfile not found at ${{ steps.detect.outputs.dockerfile_path }}" && exit 1)
 
       - name: Resolve branches (inputs > file > default)
         id: branches
         shell: bash
         run: |
           set -euo pipefail
-          # 1) workflow_dispatch 输入（优先级最高）
           FRAPPE_INPUT="${{ github.event.inputs.frappe_branch || '' }}"
           ERPNEXT_INPUT="${{ github.event.inputs.erpnext_branch || '' }}"
 
-          # 2) 仓库内“配置文件”
           FRAPPE_FILE_VAL=""
           ERPNEXT_FILE_VAL=""
-          if [[ -f "${{ env.FRAPPE_BRANCH_FILE }}" ]]; then
-            FRAPPE_FILE_VAL="$(cat "${{ env.FRAPPE_BRANCH_FILE }}" | tr -d ' \t\r\n')"
+          if [[ -f "${{ steps.detect.outputs.frappe_branch_file }}" ]]; then
+            FRAPPE_FILE_VAL="$(cat "${{ steps.detect.outputs.frappe_branch_file }}" | tr -d ' \t\r\n')"
           fi
-          if [[ -f "${{ env.ERPNEXT_BRANCH_FILE }}" ]]; then
-            ERPNEXT_FILE_VAL="$(cat "${{ env.ERPNEXT_BRANCH_FILE }}" | tr -d ' \t\r\n')"
+          if [[ -f "${{ steps.detect.outputs.erpnext_branch_file }}" ]]; then
+            ERPNEXT_FILE_VAL="$(cat "${{ steps.detect.outputs.erpnext_branch_file }}" | tr -d ' \t\r\n')"
           fi
 
-          # 3) 默认值
           FRAPPE_DEF="${{ env.FRAPPE_BRANCH_DEFAULT }}"
           ERPNEXT_DEF="${{ env.ERPNEXT_BRANCH_DEFAULT }}"
 
-          # 归并（输入 > 文件 > 默认）
           FRAPPE_BRANCH="${FRAPPE_INPUT:-${FRAPPE_FILE_VAL:-$FRAPPE_DEF}}"
           ERPNEXT_BRANCH="${ERPNEXT_INPUT:-${ERPNEXT_FILE_VAL:-$ERPNEXT_DEF}}"
 
@@ -93,7 +110,7 @@ jobs:
           echo "frappe_branch=${FRAPPE_BRANCH}" >> "$GITHUB_OUTPUT"
           echo "erpnext_branch=${ERPNEXT_BRANCH}" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch latest commit SHAs from upstream (frappe & erpnext)
+      - name: Fetch latest upstream SHAs (frappe & erpnext)
         id: fetch
         shell: bash
         run: |
@@ -101,8 +118,6 @@ jobs:
           FRAPPE_BRANCH="${{ steps.branches.outputs.frappe_branch }}"
           ERPNEXT_BRANCH="${{ steps.branches.outputs.erpnext_branch }}"
 
-          # 通过 GitHub API 获取该分支最新 commit SHA
-          # 注意：如遇到 GitHub API 限额，本步会自动降级为空值（随后用占位符）
           get_sha () {
             local repo="$1"; local branch="$2"
             curl -fsSL "https://api.github.com/repos/${repo}/commits?sha=${branch}&per_page=1" \
@@ -112,7 +127,6 @@ jobs:
           FRAPPE_SHA="$(get_sha 'frappe/frappe' "${FRAPPE_BRANCH}")"
           ERPNEXT_SHA="$(get_sha 'frappe/erpnext' "${ERPNEXT_BRANCH}")"
 
-          # 兜底处理
           [[ -n "${FRAPPE_SHA}" && "${FRAPPE_SHA}" != "null" ]] || FRAPPE_SHA="ffffffffffffffffffffffffffffffffffffffff"
           [[ -n "${ERPNEXT_SHA}" && "${ERPNEXT_SHA}" != "null" ]] || ERPNEXT_SHA="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
@@ -129,11 +143,10 @@ jobs:
           FRAPPE_SHA="${{ steps.fetch.outputs.frappe_sha }}"
           ERPNEXT_SHA="${{ steps.fetch.outputs.erpnext_sha }}"
 
-          # 把 Dockerfile 与（可选）安装脚本的哈希也纳入版本指纹，做到“源+脚本双重锁定”
-          DF_SHA="$(sha256sum "${{ env.DOCKERFILE_PATH }}" | cut -c1-8)"
+          DF_SHA="$(sha256sum "${{ steps.detect.outputs.dockerfile_path }}" | cut -c1-8)"
           INST_SHA="none"
-          if [[ -f "${{ env.WORKDIR }}/installdata/install-erpnext15.sh" ]]; then
-            INST_SHA="$(sha256sum "${{ env.WORKDIR }}/installdata/install-erpnext15.sh" | cut -c1-8)"
+          if [[ -f "${{ steps.detect.outputs.workdir }}/installdata/install-erpnext15.sh" ]]; then
+            INST_SHA="$(sha256sum "${{ steps.detect.outputs.workdir }}/installdata/install-erpnext15.sh" | cut -c1-8)"
           fi
 
           FRAPPE_BRANCH="${{ steps.branches.outputs.frappe_branch }}"
@@ -141,7 +154,6 @@ jobs:
 
           VERSION_KEY="frappe-${FRAPPE_BRANCH}@$(short "$FRAPPE_SHA")__erpnext-${ERPNEXT_BRANCH}@$(short "$ERPNEXT_SHA")__df-${DF_SHA}__inst-${INST_SHA}"
           echo "VERSION_KEY=${VERSION_KEY}"
-
           echo "version_key=${VERSION_KEY}" >> "$GITHUB_OUTPUT"
 
       - name: Read last_version & decide
@@ -151,27 +163,23 @@ jobs:
           set -euo pipefail
           FORCE="${{ github.event.inputs.force_build || 'false' }}"
           VERSION_KEY="${{ steps.version.outputs.version_key }}"
-          LAST_FILE="${{ env.WORKDIR }}/.last_version"
+          LAST_FILE="${{ steps.detect.outputs.last_version_file }}"
 
           CUR="none"
           if [[ -f "${LAST_FILE}" ]]; then
             CUR="$(cat "${LAST_FILE}" | tr -d '\r\n')"
           fi
 
-          echo "Current recorded: ${CUR}"
-          echo "New candidate   : ${VERSION_KEY}"
+          echo "Recorded: ${CUR}"
+          echo "Candidate: ${VERSION_KEY}"
 
           if [[ "${FORCE}" == "true" ]]; then
-            echo "force_build=true"
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           elif [[ "${CUR}" != "${VERSION_KEY}" ]]; then
-            echo "Version changed."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No change."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "version_key=${VERSION_KEY}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build & Push
@@ -197,7 +205,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 统一由 metadata-action 生成 tags/labels（Dockerfile 里不写 maintainer/author）
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
@@ -207,40 +214,20 @@ jobs:
           tags: |
             type=raw,value=latest
             type=raw,value=${{ needs.check.outputs.version_key }}
-            # 额外提供“分支味道”的标签，便于筛选
             type=raw,value=frappe-${{ needs.check.outputs.frappe_branch }}
             type=raw,value=erpnext-${{ needs.check.outputs.erpnext_branch }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.title=ERPNext 15 All-in-One
-            org.opencontainers.image.description=All-in-one image built from ${{
-              needs.check.outputs.frappe_branch }}/${
-              needs.check.outputs.erpnext_branch } with pinned SHAs
+            org.opencontainers.image.description=All-in-one image with pinned SHAs
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.check.outputs.version_key }}
-            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
 
       - name: Build & Push (multi-arch)
         uses: docker/build-push-action@v5
         with:
-          context: ${{ env.WORKDIR }}
-          file: ${{ env.DOCKERFILE_PATH }}
+          context: ${{ needs.check.outputs.workdir }}
+          file: ${{ needs.check.outputs.dockerfile_path }}
           push: true
           platforms: linux/amd64,linux/arm64
-          # 仅在你需要“强制重建所有层”时开启 no-cache。这里遵从 force_build，而正常走缓存提速
-          no-cache: ${{ github.event.inputs.force_build == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Update .last_version & commit back
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "${{ needs.check.outputs.version_key }}" > "${{ env.WORKDIR }}/.last_version"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ env.WORKDIR }}/.last_version"
-          git commit -m "chore(erpnext15): record build ${{ needs.check.outputs.version_key }}" || echo "No changes to commit"
-          git push
+          no
