@@ -14,9 +14,5 @@
   {
     "url": "https://github.com/frappe/print_designer",
     "branch": "main"
-  },
-  {
-    "url": "https://{{ PAT }}@git.example.com/project/repository.git",
-    "branch": "main"
   }
 ]
