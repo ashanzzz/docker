@@ -1,4 +1,4 @@
-name: ERPNext v15 镜像构建（含跳过/强制更新逻辑）
+name: ERPNext v15 镜像构建（含跳过/强制更新逻辑 + 友好输出/自检）
 
 on:
   push:
@@ -19,7 +19,6 @@ on:
         required: false
         default: "linux/amd64,linux/arm64"
   schedule:
-    # 每天 03:20 UTC 定时检查一次（可按需修改/删除）
     - cron: "20 3 * * *"
 
 permissions:
@@ -27,12 +26,10 @@ permissions:
   packages: write
 
 env:
-  # ======= 你可以按需修改的默认项 =======
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/erpnext15
   FRAPPE_PATH: https://github.com/frappe/frappe
   FRAPPE_BRANCH: version-15
-  # =====================================
 
 jobs:
   build:
@@ -45,10 +42,10 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 安装 jq（用于解析 JSON）
+      - name: 安装 jq / git
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq git
 
       - name: 登录镜像仓库（默认 GHCR）
         uses: docker/login-action@v3
@@ -57,33 +54,51 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 检查 erpnext15 目录与 app.json
+        id: ckdir
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d "erpnext15" ]]; then
+            echo "::notice title=跳过构建::未检测到 erpnext15 目录。当前无 ERPNext 镜像构建输入。"
+            echo "HAS_DIR=false" >> $GITHUB_OUTPUT
+          else
+            echo "HAS_DIR=true" >> $GITHUB_OUTPUT
+            if [[ ! -f "erpnext15/app.json" ]]; then
+              echo "::notice title=跳过构建::缺少 erpnext15/app.json。当前无 ERPNext 镜像构建输入。"
+              echo "HAS_APP_JSON=false" >> $GITHUB_OUTPUT
+            else
+              echo "HAS_APP_JSON=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: 若无输入则温和退出
+        if: ${{ steps.ckdir.outputs.HAS_DIR == 'false' || steps.ckdir.outputs.HAS_APP_JSON == 'false' }}
+        run: |
+          echo "没有有效的构建输入（目录或 app.json 缺失），本次流程结束。"
+          exit 0
+
       - name: 读取本地配置（FORCE_UPDATE / ERPNEXT_VERSION）
         id: localcfg
         shell: bash
         run: |
           set -euo pipefail
-          # 默认值：不强制更新
           FORCE_UPDATE="false"
           LOCAL_VERSION="unknown"
 
-          # 从 workflow_dispatch 输入覆盖 FORCE_UPDATE
           if [[ "${{ github.event.inputs.force_update || '' }}" == "true" ]]; then
             FORCE_UPDATE="true"
           fi
 
-          # 从 erpnext15/.env.example 读取（如果存在这些键）
           if [[ -f "erpnext15/.env.example" ]]; then
-            # 读取 FORCE_UPDATE（若配置文件里给了）
             if grep -qE '^FORCE_UPDATE=' erpnext15/.env.example; then
-              # 若手动触发传入了 true，则以手动为准；否则用文件值
               if [[ "$FORCE_UPDATE" != "true" ]]; then
                 FORCE_UPDATE="$(grep -E '^FORCE_UPDATE=' erpnext15/.env.example | head -n1 | cut -d= -f2 | tr -d '\r' | tr 'A-Z' 'a-z')"
                 [[ -z "$FORCE_UPDATE" ]] && FORCE_UPDATE="false"
               fi
             fi
-            # 读取 ERPNEXT_VERSION（本地声明的版本号）
             if grep -qE '^ERPNEXT_VERSION=' erpnext15/.env.example; then
-              LOCAL_VERSION="$(grep -E '^ERPNEXT_VERSION=' erpnext15/.env.example | head -n1 | cut -d= -f2 | tr -d '\r' )"
+              LOCAL_VERSION="$(grep -E '^ERPNEXT_VERSION=' erpnext15/.env.example | head -n1 | cut -d= -f2 | tr -d '\r')"
               [[ -z "$LOCAL_VERSION" ]] && LOCAL_VERSION="unknown"
             fi
           fi
@@ -98,39 +113,63 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           UPSTREAM_REPO="frappe/erpnext"
           REMOTE_TAG=""
-
-          echo "== 优先方式：GitHub API 拉取 v15.* tags =="
-          # 取最多 200 条 tag，然后筛 v15.*，按语义版本排序，取最后一个
-          # 使用 GITHUB_TOKEN 提高速率限制
+          echo "== 尝试 GitHub API 拉取 v15.* tags =="
           RESPONSE="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/${UPSTREAM_REPO}/tags?per_page=200" || true)"
           if [[ -n "$RESPONSE" ]]; then
             REMOTE_TAG="$(echo "$RESPONSE" | jq -r '.[].name' | grep -E '^v15\.' | sort -V | tail -n1 || true)"
           fi
-
           if [[ -z "$REMOTE_TAG" ]]; then
-            echo "== 兜底1：git ls-remote --tags 解析 v15.* =="
+            echo "== 兜底：git ls-remote --tags =="
             REMOTE_TAG="$(git ls-remote --tags https://github.com/${UPSTREAM_REPO}.git | \
               awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' | grep -E '^v15\.' | sort -V | tail -n1 || true)"
           fi
-
           if [[ -z "$REMOTE_TAG" ]]; then
-            echo "== 兜底2：取 version-15 分支最新提交 SHA =="
+            echo "== 兜底2：取 version-15 分支最新 SHA =="
             REMOTE_SHA="$(git ls-remote https://github.com/${UPSTREAM_REPO}.git refs/heads/version-15 | awk '{print $1}' | head -n1 || true)"
             if [[ -n "$REMOTE_SHA" ]]; then
               REMOTE_TAG="sha-${REMOTE_SHA:0:12}"
             fi
           fi
-
           if [[ -z "$REMOTE_TAG" ]]; then
             echo "无法获取上游版本号，终止。"
             exit 1
           fi
-
           echo "REMOTE_TAG=$REMOTE_TAG" | tee -a $GITHUB_OUTPUT
+
+      - name: 解析 app.json、列出插件清单并预校验
+        id: appslist
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== 校验 app.json 格式 =="
+          jq empty erpnext15/app.json
+
+          echo "== 插件清单（url / branch） =="
+          jq -r '.[] | "- " + (.url|tostring) + " @ " + (.branch|tostring)' erpnext15/app.json
+
+          echo "== Base64 编码并回显解码验证 =="
+          B64="$(base64 -w 0 erpnext15/app.json)"
+          echo "$B64" | base64 -d > apps-test-output.json
+          echo "apps-test-output.json 内容摘要："
+          jq -r '.[] | {url,branch}' apps-test-output.json
+
+          echo "APPS_JSON_BASE64=$B64" >> $GITHUB_OUTPUT
+
+          echo "== 逐个仓库连通性检测（仅公开仓库会成功；私有需 PAT） =="
+          urls=($(jq -r '.[].url' erpnext15/app.json))
+          for u in "${urls[@]}"; do
+            masked="${u}"
+            [[ "$u" == *"@"* ]] && masked="$(echo "$u" | sed 's#://[^@]*@#://***@#')"
+            echo "→ 检测 $masked"
+            if git ls-remote --heads --tags "$u" >/dev/null 2>&1; then
+              echo "  OK"
+            else
+              echo "  ⚠️ 连接失败（可能是私有仓库或 URL/分支错误）。如为私有，需要在 URL 注入 PAT。"
+            fi
+          done
 
       - name: 决策：是否需要构建
         id: decide
@@ -140,43 +179,26 @@ jobs:
           FORCE_UPDATE="${{ steps.localcfg.outputs.FORCE_UPDATE }}"
           LOCAL_VERSION="${{ steps.localcfg.outputs.LOCAL_VERSION }}"
           REMOTE_TAG="${{ steps.upstream.outputs.REMOTE_TAG }}"
-
           SHOULD_BUILD="true"
-          REASON=""
-
-          # 规则：
-          # 1) 如果本地声明版本 与 上游版本一致：
-          #    - FORCE_UPDATE=false -> 跳过
-          #    - FORCE_UPDATE=true  -> 仍然构建
-          # 2) 如果不一致 -> 构建
           if [[ "$LOCAL_VERSION" == "$REMOTE_TAG" ]]; then
             if [[ "$FORCE_UPDATE" == "true" ]]; then
               SHOULD_BUILD="true"
-              REASON="一致但 FORCE_UPDATE=true，执行构建。"
+              REASON="版本一致但 FORCE_UPDATE=true，执行构建。"
             else
               SHOULD_BUILD="false"
-              REASON="一致且 FORCE_UPDATE=false，跳过构建。"
+              REASON="版本一致且 FORCE_UPDATE=false，跳过构建。"
             fi
           else
             SHOULD_BUILD="true"
-            REASON="不一致（本地: ${LOCAL_VERSION} / 上游: ${REMOTE_TAG}），执行构建。"
+            REASON="版本不一致（本地: ${LOCAL_VERSION} / 上游: ${REMOTE_TAG}），执行构建。"
           fi
-
           echo "SHOULD_BUILD=$SHOULD_BUILD" | tee -a $GITHUB_OUTPUT
           echo "DECISION_REASON=$REASON" | tee -a $GITHUB_OUTPUT
+          echo "::notice title=构建决策::${REASON}"
 
-      - name: 输出决策
-        run: |
-          echo "FORCE_UPDATE=${{ steps.localcfg.outputs.FORCE_UPDATE }}"
-          echo "LOCAL_VERSION=${{ steps.localcfg.outputs.LOCAL_VERSION }}"
-          echo "REMOTE_TAG=${{ steps.upstream.outputs.REMOTE_TAG }}"
-          echo "SHOULD_BUILD=${{ steps.decide.outputs.SHOULD_BUILD }}"
-          echo "原因：${{ steps.decide.outputs.DECISION_REASON }}"
-
-      - name: 若跳过则提前结束
+      - name: 若跳过则结束
         if: ${{ steps.decide.outputs.SHOULD_BUILD == 'false' && (github.event_name != 'workflow_dispatch') }}
-        run: |
-          echo "跳过构建（非手动触发）。"
+        run: echo "跳过构建（非手动触发）。"
 
       - name: 计算镜像 TAG 与平台
         if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -188,31 +210,23 @@ jobs:
           INPUT_TAG="${{ github.event.inputs.tag || '' }}"
           PLATFORMS="${{ github.event.inputs.platforms || '' }}"
           [[ -z "$PLATFORMS" ]] && PLATFORMS="linux/amd64,linux/arm64"
-
-          # 若手动指定 tag 则用输入，否则默认用上游版本号
           FINAL_TAG="$REMOTE_TAG"
-          if [[ -n "$INPUT_TAG" ]]; then
-            FINAL_TAG="$INPUT_TAG"
-          fi
-
+          [[ -n "$INPUT_TAG" ]] && FINAL_TAG="$INPUT_TAG"
           echo "FINAL_TAG=$FINAL_TAG" | tee -a $GITHUB_OUTPUT
           echo "PLATFORMS=$PLATFORMS" | tee -a $GITHUB_OUTPUT
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$FINAL_TAG" | tee -a $GITHUB_OUTPUT
+          echo "::notice title=镜像标签::${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$FINAL_TAG"
 
-      - name: Base64 编码 erpnext15/app.json → APPS_JSON_BASE64
+      - name: Quick check 上游 frappe_docker 可达性
         if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
-        id: apps
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f "erpnext15/app.json" ]]; then
-            echo "缺少 erpnext15/app.json"
+          if ! git ls-remote https://github.com/frappe/frappe_docker.git >/dev/null 2>&1; then
+            echo "无法访问 frappe/frappe_docker 仓库，请检查 GitHub 网络连通性。"
             exit 1
           fi
-          # 校验 JSON 合法
-          jq empty erpnext15/app.json
-          # 单行 Base64
-          echo "APPS_JSON_BASE64=$(base64 -w 0 erpnext15/app.json)" >> $GITHUB_OUTPUT
+          echo "frappe_docker 仓库可访问。"
 
       - name: 设置 Buildx
         if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -222,7 +236,6 @@ jobs:
         if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
         uses: docker/build-push-action@v6
         with:
-          # 直接使用上游 frappe_docker 作为构建上下文
           context: https://github.com/frappe/frappe_docker.git#main
           file: images/layered/Containerfile
           push: true
@@ -230,12 +243,27 @@ jobs:
           build-args: |
             FRAPPE_PATH=${{ env.FRAPPE_PATH }}
             FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
-            APPS_JSON_BASE64=${{ steps.apps.outputs.APPS_JSON_BASE64 }}
+            APPS_JSON_BASE64=${{ steps.appslist.outputs.APPS_JSON_BASE64 }}
           tags: |
             ${{ steps.meta.outputs.IMAGE }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-v15
+          provenance: false
+          no-cache: false
+          sbom: false
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
-      - name: 构建结果
-        if: ${{ steps.decide.outputs.SHOULD_BUILD == 'true' || github.event_name == 'workflow_dispatch' }}
+      - name: 构建结果 / 常见问题提示
+        if: ${{ always() }}
+        shell: bash
         run: |
-          docker buildx imagetools inspect "${{ steps.meta.outputs.IMAGE }}"
+          set -euo pipefail
+          echo "================ 构建结果/排错提示 ================"
+          echo "1) 若失败并出现 bench init 相关报错，常见原因："
+          echo "   - app.json 无效（逗号/引号/尾逗号）→ 本流程已用 jq 校验；"
+          echo "   - 私有仓库 URL 未注入 PAT（app.json url 需形如 https://<PAT>@host/owner/repo.git）；"
+          echo "   - 分支名错误或仓库不存在；"
+          echo "   - 上游依赖版本不兼容（可尝试改用 images/custom/Containerfile 并指定 PYTHON/NODE）；"
+          echo "2) 若网络原因导致 git 克隆失败，可重试或改为企业镜像代理。"
+          echo "3) 若 Print Designer 分支兼容性问题，可改为 branch: develop 或去掉该条目测试。"
+          echo "==================================================="
