@@ -897,7 +897,7 @@ cd ~/${installDir}
 echo "===================获取应用==================="
 bench get-app ${erpnextBranch} ${erpnextPath}
 bench get-app payments
-# bench get-app ${erpnextBranch} hrms
+bench get-app ${erpnextBranch} hrms
 bench get-app print_designer
 EOF
 # 建立新网站
@@ -912,7 +912,7 @@ cd ~/${installDir}
 echo "===================安装erpnext应用到新网站==================="
 bench --site ${siteName} install-app payments
 bench --site ${siteName} install-app erpnext
-# bench --site ${siteName} install-app hrms
+bench --site ${siteName} install-app hrms
 bench --site ${siteName} install-app print_designer
 EOF
 # 站点配置
@@ -924,15 +924,6 @@ bench config http_timeout 6000
 # 开启默认站点并设置默认站点
 bench config serve_default_site on
 bench use ${siteName}
-EOF
-# 安装中文本地化,只有框架，需要自行编辑zh.csv文件添加翻译词条。
-# 详情请见：https://gitee.com/phipsoft/zh_chinese_language
-su - ${userName} <<EOF
-cd ~/${installDir}
-echo "===================安装中文本地化==================="
-bench get-app https://gitee.com/yuzelin/erpnext_chinese.git
-bench --site ${siteName} install-app erpnext_chinese
-bench clear-cache && bench clear-website-cache
 EOF
 # 清理工作台
 su - ${userName} <<EOF
