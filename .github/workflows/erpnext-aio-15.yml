@@ -3,15 +3,34 @@ name: Build ERPNext AIO Image
 on:
   push:
     branches: [ "main", "master" ]
-    tags: [ "v*" ]
-  workflow_dispatch: {}
+    tags:     [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "镜像版本号，如 15.77.0。若填写且开启 push_git_tag，将在仓库创建/更新 git 标签 v<version>。"
+        required: false
+        default: ""
+      push_git_tag:
+        description: "当填写 version 时，是否在仓库创建并推送 v<version> 标签"
+        type: boolean
+        required: false
+        default: true
+      force_rebuild:
+        description: "强制更新：忽略构建缓存（no-cache）"
+        type: boolean
+        required: false
+        default: false
+      china_mirrors:
+        description: "构建时使用国内镜像 (yes/no)"
+        required: false
+        default: "no"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write  # 推 GHCR 需要
+      contents: write     # 需要创建/推送 git tag
+      packages: write     # 推送 GHCR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,31 +48,74 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to DockerHub (optional)
-        if: ${{ secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Derive tags
+      - name: Derive version, tags & metadata
         id: meta
+        env:
+          INP_VERSION: ${{ github.event.inputs.version }}
+          CHINA_MIRRORS: ${{ github.event.inputs.china_mirrors }}
         run: |
-          IMAGE_NAME_GHCR="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erpnext15-aio"
-          TAGS_GHCR="${IMAGE_NAME_GHCR}:latest"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            TAGS_GHCR="${TAGS_GHCR},${IMAGE_NAME_GHCR}:${GITHUB_REF_NAME}"
-          fi
-          echo "ghcr=${TAGS_GHCR}" >> "$GITHUB_OUTPUT"
-
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]]; then
-            IMAGE_NAME_DH="${{ secrets.DOCKERHUB_USERNAME }}/erpnext15-aio"
-            TAGS_DH="${IMAGE_NAME_DH}:latest"
-            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-              TAGS_DH="${TAGS_DH},${IMAGE_NAME_DH}:${GITHUB_REF_NAME}"
+          set -e
+          # 1) 版本来源优先级：
+          #    a) workflow_dispatch 输入 version
+          #    b) 推送的 git 标签 v*
+          #    c) rolling（滚动）
+          VERSION="${INP_VERSION}"
+          if [[ -z "$VERSION" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+              VERSION="${GITHUB_REF_NAME#v}"
+            else
+              VERSION="rolling"
             fi
-            echo "dh=${TAGS_DH}" >> "$GITHUB_OUTPUT"
           fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+          # 2) 镜像名（统一我们的风格）
+          OWNER_LC="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER_LC}/erpnext15-aio"
+
+          # 3) tags：始终推 latest；若有版本号，额外推 <version> 与 v<version>
+          TAGS="${IMAGE}:latest"
+          if [[ "$VERSION" != "rolling" ]]; then
+            TAGS="${TAGS},${IMAGE}:${VERSION},${IMAGE}:v${VERSION}"
+          fi
+          echo "TAGS=$TAGS" >> $GITHUB_ENV
+
+          # 4) 其它元信息
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "CREATED=$CREATED" >> $GITHUB_ENV
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          # 5) 国内镜像开关（传递给 Dockerfile）
+          if [[ "${CHINA_MIRRORS}" == "yes" ]]; then
+            echo "CHINA_MIRRORS=yes" >> $GITHUB_ENV
+          else
+            echo "CHINA_MIRRORS=no" >> $GITHUB_ENV
+          fi
+
+      - name: Create git tag v<version> (when asked)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' && inputs.push_git_tag == true }}
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ env.VERSION }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const tagRef = `refs/tags/v${version}`;
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/v${version}`
+              });
+              core.info(`Git tag v${version} 已存在，跳过创建。`);
+            } catch (e) {
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: tagRef,
+                sha: context.sha
+              });
+              core.info(`已创建 git tag v${version}。`);
+            }
 
       - name: Build and push (GHCR)
         uses: docker/build-push-action@v6
@@ -62,9 +124,17 @@ jobs:
           file: erpnext15/aio/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.ghcr }}
+          no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
+          tags: ${{ env.TAGS }}
+          labels: |
+            org.opencontainers.image.title=ERPNext AIO
+            org.opencontainers.image.description=All-in-one ERPNext with MariaDB & Redis. Ready to run.
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ env.CREATED }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           build-args: |
-            CHINA_MIRRORS=no
+            CHINA_MIRRORS=${{ env.CHINA_MIRRORS }}
             FRAPPE_BRANCH=version-15
             ERPNEXT_BRANCH=version-15
             SITE_NAME=site1.local
