@@ -16,10 +16,9 @@ RUN /bin/bash -c "chmod -R 777 /installdata/* && /installdata/install-erpnext15.
 USER frappe
 WORKDIR /home/frappe/frappe-bench
 
-EXPOSE 3306 80
+EXPOSE 80
 
 VOLUME /home/frappe/frappe-bench/sites
-VOLUME /var/lib/mysql
 
 STOPSIGNAL SIGTERM
 
