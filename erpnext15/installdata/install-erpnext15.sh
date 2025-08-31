@@ -928,6 +928,14 @@ EOF
 # 清理工作台
 su - ${userName} <<EOF
 cd ~/${installDir}
+echo "===================安装中文本地化==================="
+bench get-app https://gitee.com/yuzelin/erpnext_chinese.git
+bench --site ${siteName} install-app erpnext_chinese
+bench clear-cache && bench clear-website-cache
+EOF
+# 清理工作台
+su - ${userName} <<EOF
+cd ~/${installDir}
 echo "===================清理工作台==================="
 bench clear-cache
 bench clear-website-cache
