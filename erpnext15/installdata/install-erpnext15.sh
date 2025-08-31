@@ -925,10 +925,11 @@ bench config http_timeout 6000
 bench config serve_default_site on
 bench use ${siteName}
 EOF
-# 清理工作台
+# 安装中文本地化,只有框架，需要自行编辑zh.csv文件添加翻译词条。
+# 详情请见：https://gitee.com/phipsoft/zh_chinese_language
 su - ${userName} <<EOF
 cd ~/${installDir}
-#echo "===================安装中文本地化==================="
+echo "===================安装中文本地化==================="
 bench get-app https://gitee.com/yuzelin/erpnext_chinese.git
 bench --site ${siteName} install-app erpnext_chinese
 bench clear-cache && bench clear-website-cache
