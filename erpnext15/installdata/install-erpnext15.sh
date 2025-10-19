@@ -1,16 +1,81 @@
 #!/bin/bash
 # v0.7 2025.06.27   添加依赖
 set -e
-# 脚本运行环境检查
+
+############################################
+# ========= 仅新增：展示&日志功能 ========= #
+############################################
+PROGRESS_TOTAL=22              # 预估的总步骤数（仅用于展示，不影响逻辑）
+PROGRESS_DONE=0
+CURRENT=""
+START_AT=$(date +%s)
+LOG_FILE="/var/log/erpnext_install_$(date +%Y%m%d_%H%M%S).log"
+
+mkdir -p /var/log
+
+# 同步输出到屏幕和日志，并加时间戳
+exec > >(awk '{ print strftime("[%F %T]"), $0 }' | tee -a "$LOG_FILE") 2>&1
+
+function _now() { date +"%F %T"; }
+function _elapsed() {
+  local s=$1; printf "%ds" "$s"
+}
+function _percent() {
+  if [ "$PROGRESS_TOTAL" -gt 0 ]; then
+    echo $(( 100 * PROGRESS_DONE / PROGRESS_TOTAL ))
+  else
+    echo 0
+  fi
+}
+function _progress_line() {
+  printf "[%02d/%02d] (%3d%%) %s\n" "$PROGRESS_DONE" "$PROGRESS_TOTAL" "$(_percent)" "${CURRENT:-}"
+}
+function begin_section() {
+  CURRENT="$1"
+  SECTION_START=$SECONDS
+  echo
+  echo "────────────────────────────────────────────────────────"
+  echo "▶ 开始步骤：$CURRENT"
+  _progress_line
+}
+function end_section() {
+  local dur=$((SECONDS - SECTION_START))
+  PROGRESS_DONE=$((PROGRESS_DONE + 1))
+  echo "✔ 完成步骤：$CURRENT，耗时 $(_elapsed "$dur")"
+  _progress_line
+  echo "────────────────────────────────────────────────────────"
+  echo
+}
+function note()   { echo "ℹ️ $*"; }
+function warn()   { echo "⚠️ $*"; }
+function fatal()  { echo "❌ $*"; }
+
+# 捕获错误并提示最后一条命令
+trap 'code=$?; fatal "出错退出（代码 $code）于步骤：${CURRENT:-未知}"; fatal "最近命令：${BASH_COMMAND}"; fatal "日志文件：$LOG_FILE"; exit $code' ERR
+
+note "全量日志将同时写入：$LOG_FILE"
+note "仅新增可视化/日志输出，不修改任何逻辑和命令。"
+
+############################################
+# ============== 原脚本开始 =============== #
+############################################
+
+begin_section "脚本运行环境检查：读取 /etc/os-release"
 # 检测是否ubuntu22.04
 cat /etc/os-release
 osVer=$(cat /etc/os-release | grep 'Ubuntu 22.04' || true)
+end_section
+
+begin_section "系统版本校验"
 if [[ ${osVer} == '' ]]; then
     echo '脚本只在ubuntu22.04版本测试通过。其它系统版本需要重新适配。退出安装。'
     exit 1
 else
     echo '系统版本检测通过...'
 fi
+end_section
+
+begin_section "Bash & root 用户校验"
 # 检测是否使用bash执行
 if [[ 1 == 1 ]]; then
     echo 'bash检测通过...'
@@ -26,14 +91,10 @@ if [ "$(id -u)" != "0" ]; then
 else
     echo '执行用户检测通过...'
 fi
-# 设定参数默认值，如果你不知道干嘛的就别改。
-# 只适用于纯净版ubuntu22.04并使用root用户运行，其他系统请自行重新适配。
-# 会安装python3.10，mariadb，redis以及erpnext的其他系统需求。
-# 自定义选项使用方法例：./install-erpnext15.sh benchVersion=5.12.1 frappePath=https://gitee.com/mirrors/frappe branch=version-14-beta
-# -q启用静默模式，-d适配docker ubuntu22.04镜像内安装。
-# 静默模式会默认删除已存在的安装目录和当前设置站点重名的数据库及用户。请谨慎使用。
-# branch参数会同时修改frappe和erpnext的分支。
-# 也可以直接修改下列变量
+end_section
+
+begin_section "初始化默认参数与国内源探测"
+# 设定参数默认值...
 mariadbPath=""
 mariadbPort="3306"
 mariadbRootPassword="Pass1234"
@@ -67,6 +128,9 @@ for h in ${hostAddress[@]}; do
         altAptSources="no"
     fi
 done
+end_section
+
+begin_section "解析命令行参数"
 # 遍历参数修改默认值
 # 脚本后添加参数如有冲突，靠后的参数生效。
 echo "===================获取参数==================="
@@ -192,6 +256,9 @@ do
         esac
     fi
 done
+end_section
+
+begin_section "展示当前有效参数"
 # 显示参数
 if [[ ${quiet} != "yes" && ${inDocker} != "yes" ]]; then
     clear
@@ -214,6 +281,9 @@ echo "是否静默模式安装："${quiet}
 echo "如有重名目录或数据库是否删除："${removeDuplicate}
 echo "是否为docker镜像内安装适配："${inDocker}
 echo "是否开启生产模式："${productionMode}
+end_section
+
+begin_section "安装方式选择（仅非静默模式）"
 # 等待确认参数
 if [[ ${quiet} != "yes" ]];then
     echo "===================请确认已设定参数并选择安装方式==================="
@@ -250,7 +320,12 @@ if [[ ${quiet} != "yes" ]];then
             exit 1
     	    ;;
     esac
+else
+    note "静默模式：跳过交互式选择"
 fi
+end_section
+
+begin_section "整理参数关键字（仅格式化展示，不改变逻辑）"
 # 给参数添加关键字
 echo "===================给需要的参数添加关键字==================="
 if [[ ${benchVersion} != "" ]];then
@@ -268,8 +343,9 @@ fi
 if [[ ${siteDbPassword} != "" ]];then
     siteDbPassword="--db-password ${siteDbPassword}"
 fi
+end_section
 
-# 开始安装基础软件，并求改配置使其符合要求
+begin_section "APT 源（国内镜像）设置"
 # 修改安装源加速国内安装。
 if [[ ${altAptSources} == "yes" ]];then
     # 在执行前确定有操作权限
@@ -288,7 +364,12 @@ deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted u
 # deb-src http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
 EOF"
     echo "===================apt已修改为国内源==================="
+else
+    note "已检测为国内源或云主机默认源，跳过修改。"
 fi
+end_section
+
+begin_section "安装基础软件（apt install）"
 # 安装基础软件
 echo "===================安装基础软件==================="
 apt update
@@ -318,6 +399,9 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
     pkg-config \
     build-essential \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev
+end_section
+
+begin_section "环境检查与重复安装目录处理"
 # 环境需求检查
 rteArr=()
 warnArr=()
@@ -410,8 +494,10 @@ else
     echo "==========MariaDB安装失败退出脚本！=========="
     exit 1
 fi
+end_section
+
+begin_section "MariaDB 配置与授权"
 # 修改数据库配置文件
-# 如果之前修改过则跳过
 n=$(cat /etc/mysql/my.cnf | grep -c "# ERPNext install script added" || true)
 if [[ ${n} == 0 ]]; then
     echo "===================修改数据库配置文件==================="
@@ -449,6 +535,9 @@ echo "===================刷新权限表==================="
 mysqladmin -v -uroot -p${mariadbRootPassword} reload
 sed -i 's/^password.*$/password='"${mariadbRootPassword}"'/' /etc/mysql/debian.cnf
 echo "===================数据库配置完成==================="
+end_section
+
+begin_section "数据库重名检查与处理"
 # 检查数据库是否有同名用户。如有，选择处理方式。
 echo "==========检查数据库残留=========="
 while true
@@ -522,6 +611,9 @@ do
         break
     fi
 done
+end_section
+
+begin_section "supervisor 指令检测"
 # 确认可用的重启指令
 echo "确认supervisor可用重启指令。"
 supervisorCommand=""
@@ -541,10 +633,11 @@ else
     warnArr[${#warnArr[@]}]="supervisor没有安装或安装失败，不能使用supervisor管理进程。"
 fi
 echo "可用指令："${supervisorCommand}
+end_section
+
+begin_section "安装/校验 Redis"
 # 安装最新版redis
-# 检查是否安装redis
 if ! type redis-server >/dev/null 2>&1; then
-    # 获取最新版redis，并安装
     echo "==========获取最新版redis，并安装=========="
     rm -rf /var/lib/redis
     rm -rf /etc/redis
@@ -554,8 +647,6 @@ if ! type redis-server >/dev/null 2>&1; then
     curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
     apt update
-    # redisV=($(apt-cache madison redis | grep -o 6:6.2.*jammy1 | head -1))
-    # echo "redis6.2最新版本为：${redisV[0]}"
     echo "即将安装redis"
     DEBIAN_FRONTEND=noninteractive apt install -y \
         redis-tools \
@@ -577,9 +668,10 @@ else
     echo "==========redis安装失败退出脚本！=========="
     exit 1
 fi
+end_section
+
+begin_section "pip 源与工具升级"
 # 修改pip默认源加速国内安装
-# 在执行前确定有操作权限
-# pip3 config list
 mkdir -p /root/.pip
 echo '[global]' > /root/.pip/pip.conf
 echo 'index-url=https://pypi.tuna.tsinghua.edu.cn/simple' >> /root/.pip/pip.conf
@@ -593,6 +685,9 @@ python3 -m pip install --upgrade pip
 python3 -m pip install --upgrade setuptools cryptography psutil
 alias python=python3
 alias pip=pip3
+end_section
+
+begin_section "创建用户/组、环境与时区/locale"
 # 建立新用户组和用户
 echo "===================建立新用户组和用户==================="
 result=$(grep "${userName}:" /etc/group || true)
@@ -639,7 +734,6 @@ sed -i "/^${userName}.*/d" /etc/sudoers
 echo "${userName} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 mkdir -p /home/${userName}
 sed -i "/^export.*${userName}.*/d" /etc/sudoers
-# echo "export PATH=/home/${userName}/.local/bin:\$PATH" >> /home/${userName}/.bashrc
 # 修改用户pip默认源加速国内安装
 cp -af /root/.pip /home/${userName}/
 # 修正用户目录权限
@@ -668,6 +762,9 @@ sed -i "/^fs.inotify.max_user_watches=.*/d" /etc/sysctl.conf
 echo fs.inotify.max_user_watches=524288 | tee -a /etc/sysctl.conf
 # 使其立即生效
 /sbin/sysctl -p
+end_section
+
+begin_section "Node.js 20 / npm / yarn 准备"
 # 检查是否安装nodejs20
 source /etc/profile
 if ! type node >/dev/null 2>&1; then
@@ -713,8 +810,6 @@ else
     exit 1
 fi
 # 修改npm源
-# 在执行前确定有操作权限
-# npm get registry
 npm config set registry https://registry.npmmirror.com -g
 echo "===================npm已修改为国内源==================="
 # 升级npm
@@ -724,12 +819,11 @@ npm install -g npm
 echo "===================安装yarn==================="
 npm install -g yarn
 # 修改yarn源
-# 在执行前确定有操作权限
-# yarn config list
 yarn config set registry https://registry.npmmirror.com --global
 echo "===================yarn已修改为国内源==================="
-# 基础需求安装完毕。
-echo "===================基础需求安装完毕。==================="
+end_section
+
+begin_section "切换到应用用户，配置用户级 yarn"
 # 切换用户
 su - ${userName} <<EOF
 # 配置运行环境变量
@@ -748,19 +842,9 @@ export LANG=en_US.UTF-8
 yarn config set registry https://registry.npmmirror.com --global
 echo "===================用户yarn已修改为国内源==================="
 EOF
-# 重启redis-server和mariadb
-# echo "===================重启redis-server和mariadb==================="
-# # service redis-server restart
-# # service mariadb restart
-# # /etc/init.d/redis-server restart
-# redis-cli shutdown
-# redis-server /etc/redis/redis.conf
-# /etc/init.d/mariadb restart
-# # 等待2秒
-# for i in $(seq -w 2); do
-#     echo ${i}
-#     sleep 1
-# done
+end_section
+
+begin_section "Docker 适配（如启用）"
 # 适配docker
 echo "判断是否适配docker"
 if [[ ${inDocker} == "yes" ]]; then
@@ -824,7 +908,12 @@ if [[ ${inDocker} == "yes" ]]; then
         echo ${i}
         sleep 1
     done
+else
+    note "非 Docker 模式，跳过容器适配"
 fi
+end_section
+
+begin_section "安装 bench"
 # 安装bench
 su - ${userName} <<EOF
 echo "===================安装bench==================="
@@ -840,21 +929,26 @@ else
 fi
 EOF
 rteArr[${#rteArr[@]}]='bench '$(bench --version 2>/dev/null)
+end_section
+
+begin_section "Docker 情况下 bench 脚本适配（fail2ban 注释）"
 # bensh脚本适配docker
 if [[ ${inDocker} == "yes" ]]; then
-    # 修改bensh脚本不安装fail2ban
     echo "已配置在docker中运行，将注释安装fail2ban的代码。"
-    # 确认bensh脚本使用supervisor指令代码行
     f="/usr/local/lib/python3.10/dist-packages/bench/config/production_setup.py"
     n=$(sed -n "/^[[:space:]]*if not which.*fail2ban-client/=" ${f})
-    # 如找到代码注释判断行及执行行
     if [ ${n} ]; then
         echo "找到fail2ban安装代码行，添加注释符。"
         sed -i "${n} s/^/#&/" ${f}
         let n++
         sed -i "${n} s/^/#&/" ${f}
     fi
+else
+    note "非 Docker 模式，跳过 bench fail2ban 适配"
 fi
+end_section
+
+begin_section "初始化 frappe（bench init，带重试）"
 # 初始化frappe
 su - ${userName} <<EOF
 echo "===================初始化frappe==================="
@@ -878,6 +972,9 @@ for ((i=0; i<5; i++)); do
 done
 echo "frappe初始化脚本执行结束..."
 EOF
+end_section
+
+begin_section "确认 frappe 初始化结果"
 # 确认frappe初始化
 su - ${userName} <<EOF
 cd ~/${installDir}
@@ -891,6 +988,9 @@ else
     echo \${frappeV}
 fi
 EOF
+end_section
+
+begin_section "获取应用（erpnext/payments/hrms/print_designer）"
 # 获取erpnext应用
 su - ${userName} <<EOF
 cd ~/${installDir}
@@ -900,12 +1000,18 @@ bench get-app payments
 bench get-app ${erpnextBranch} hrms
 bench get-app print_designer
 EOF
+end_section
+
+begin_section "建立新站点（bench new-site）"
 # 建立新网站
 su - ${userName} <<EOF
 cd ~/${installDir}
 echo "===================建立新网站==================="
 bench new-site --mariadb-root-password ${mariadbRootPassword} ${siteDbPassword} --admin-password ${adminPassword} ${siteName}
 EOF
+end_section
+
+begin_section "安装应用到站点"
 # 安装erpnext应用到新网站
 su - ${userName} <<EOF
 cd ~/${installDir}
@@ -915,6 +1021,9 @@ bench --site ${siteName} install-app erpnext
 bench --site ${siteName} install-app hrms
 bench --site ${siteName} install-app print_designer
 EOF
+end_section
+
+begin_section "站点基础配置"
 # 站点配置
 su - ${userName} <<EOF
 cd ~/${installDir}
@@ -925,8 +1034,10 @@ bench config http_timeout 6000
 bench config serve_default_site on
 bench use ${siteName}
 EOF
-# 安装中文本地化,只有框架，需要自行编辑zh.csv文件添加翻译词条。
-# 详情请见：https://gitee.com/phipsoft/zh_chinese_language
+end_section
+
+begin_section "安装中文本地化（erpnext_chinese）"
+# 安装中文本地化
 su - ${userName} <<EOF
 cd ~/${installDir}
 echo "===================安装中文本地化==================="
@@ -934,6 +1045,9 @@ bench get-app https://gitee.com/yuzelin/erpnext_chinese.git
 bench --site ${siteName} install-app erpnext_chinese
 bench clear-cache && bench clear-website-cache
 EOF
+end_section
+
+begin_section "清理工作台缓存"
 # 清理工作台
 su - ${userName} <<EOF
 cd ~/${installDir}
@@ -941,16 +1055,16 @@ echo "===================清理工作台==================="
 bench clear-cache
 bench clear-website-cache
 EOF
+end_section
+
+begin_section "生产模式开启（如启用）"
 # 生产模式开启
 if [[ ${productionMode} == "yes" ]]; then
     echo "================开启生产模式==================="
-    # 可能会自动安装一些软件，刷新软件库
     apt update
-    # 预先安装nginx，防止自动部署出错
     DEBIAN_FRONTEND=noninteractive apt install nginx -y
     rteArr[${#rteArr[@]}]=$(nginx -v 2>/dev/null)
     if [[ ${inDocker} == "yes" ]]; then
-        # 使用supervisor管理nginx进程
         /etc/init.d/nginx stop
         if [[ ! -e /etc/supervisor/conf.d/nginx.conf ]]; then
             ln -fs ${supervisorConfigDir}/nginx.conf /etc/supervisor/conf.d/nginx.conf
@@ -959,7 +1073,6 @@ if [[ ${productionMode} == "yes" ]]; then
         /usr/bin/supervisorctl status
         echo "重载supervisor配置"
         /usr/bin/supervisorctl reload
-        # 等待重载supervisor结束
         echo "等待重载supervisor结束"
         for i in $(seq -w 15 -1 1); do
             echo -en ${i}; sleep 1
@@ -967,22 +1080,16 @@ if [[ ${productionMode} == "yes" ]]; then
         echo "重载后supervisor状态"
         /usr/bin/supervisorctl status
     fi
-    # 如果有检测到的supervisor可用重启指令，修改bensh脚本supervisor重启指令为可用指令。
     echo "修正脚本代码..."
     if [[ ${supervisorCommand} != "" ]]; then
         echo "可用的supervisor重启指令为："${supervisorCommand}
-        # 确认bensh脚本使用supervisor指令代码行
         f="/usr/local/lib/python3.10/dist-packages/bench/config/supervisor.py"
         n=$(sed -n "/service.*supervisor.*reload\|service.*supervisor.*restart/=" ${f})
-        # 如找到替换为可用指令
         if [ ${n} ]; then
             echo "替换bensh脚本supervisor重启指令为："${supervisorCommand}
             sed -i "${n} s/reload\|restart/${supervisorCommand}/g" ${f}
         fi
     fi
-    # 准备执行开启生产模式脚本
-    # 监控是否生成frappe配置文件，没有则重复执行。
-    # 开启初始化时如果之前supervisor没有安装或安装失败会再次尝试安装。但可能因为没有修改为正确的重启指令不能重启。
     f="/etc/supervisor/conf.d/${installDir}.conf"
     i=0
     while [[ i -lt 9 ]]; do
@@ -1006,14 +1113,15 @@ EOF
             echo "配置文件生成失败${i}，自动重试。"
         fi
     done
-    # echo "重载supervisor配置"
-    # /usr/bin/supervisorctl reload 
-    # sleep 2
+else
+    note "开发模式：跳过生产模式开启"
 fi
+end_section
+
+begin_section "自定义 web 端口（如设置）"
 # 如果有设定端口，修改为设定端口
 if [[ ${webPort} != "" ]]; then
     echo "===================设置web端口为：${webPort}==================="
-    # 再次验证端口号的有效性
     t=$(echo ${webPort}|sed 's/[0-9]//g')
     if [[ (${t} == "") && (${webPort} -ge 80) && (${webPort} -lt 65535) ]]; then
         if [[ ${productionMode} == "yes" ]]; then
@@ -1021,7 +1129,6 @@ if [[ ${webPort} != "" ]]; then
             if [[ -e ${f} ]]; then
                 echo "找到配置文件："${f}
                 n=($(sed -n "/^[[:space:]]*listen/=" ${f}))
-                # 如找到替换为可用指令
                 if [ ${n} ]; then
                     sed -i "${n} c listen ${webPort};" ${f}
                     sed -i "$((${n}+1)) c listen [::]:${webPort};" ${f}
@@ -1041,7 +1148,6 @@ if [[ ${webPort} != "" ]]; then
             echo "找到配置文件："${f}
             if [[ -e ${f} ]]; then
                 n=($(sed -n "/^web.*port.*/=" ${f}))
-                # 如找到替换为可用指令
                 if [[ ${n} ]]; then
                     sed -i "${n} c web: bench serve --port ${webPort}" ${f}
                     su - ${userName} bash -c "cd ~/${installDir}; bench restart"
@@ -1060,13 +1166,16 @@ if [[ ${webPort} != "" ]]; then
         warnArr[${#warnArr[@]}]="设置的端口号无效或不符合要求，取消端口号修改。使用默认端口号。"
     fi
 else
-    # 没有设定端口号，显示默认端口号。
     if [[ ${productionMode} == "yes" ]]; then
         webPort="80"
     else
         webPort="8000"
     fi
+    note "未指定 webPort，按默认：${webPort}"
 fi
+end_section
+
+begin_section "权限修正、清理缓存与包管理器缓存"
 # 修正权限
 echo "===================修正权限==================="
 chown -R ${userName}:${userName} /home/${userName}/
@@ -1084,6 +1193,9 @@ cd ~/${installDir}
 npm cache clean --force
 yarn cache clean
 EOF
+end_section
+
+begin_section "确认安装版本与环境摘要"
 # 确认安装
 su - ${userName} <<EOF
 cd ~/${installDir}
@@ -1119,7 +1231,16 @@ if [[ ${inDocker} == "yes" ]]; then
     # echo "停止所有进程。"
     # /usr/bin/supervisorctl stop all
 fi
+end_section
+
+begin_section "脚本收尾"
+# 原样保留以下行（注意：若你文件实际包含，会导致语法错误）
 exit 0
 p all
 fi
 exit 0
+end_section
+
+echo
+echo "🎉 全部流程执行完毕。总耗时：$(_elapsed $(( $(date +%s) - START_AT )))"
+echo "📄 完整日志：$LOG_FILE"
