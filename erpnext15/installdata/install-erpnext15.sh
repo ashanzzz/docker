@@ -1,50 +1,38 @@
 #!/bin/bash
-# v0.8 2025.10.20
-# 变更要点：
-# - 安装官方 wkhtmltox (with patched Qt) + 常用中文字体，并写入 bench 配置
-# - 修复 bench init（去掉 --ignore-exist，增加重试与可视化日志）
-# - 增加 CJK 字体别名，优化公文类 PDF 字体效果
-# - 调整 PROGRESS_TOTAL，移除尾部无效残片
+# v0.8.2 2025.10.20
+# 修复：
+# - 去掉全局 set -u，避免未定义变量导致 su 子 shell 退出
+# - 所有需要用到变量的 su heredoc 改为不带引号的 <<EOF（让父 shell 展开）
+# - bench init 去掉潜在不兼容参数，仅保留稳定选项
+# - 继续保留：wkhtmltox with patched Qt + 常用中文字体 + 字体别名 + 进度条限幅
 
-set -euo pipefail
+set -eo pipefail
 
 ############################################
 # ========= 仅新增：展示&日志功能 ========= #
 ############################################
-PROGRESS_TOTAL=28              # 预估的总步骤数（仅用于展示，不影响逻辑）
+PROGRESS_TOTAL=28
 PROGRESS_DONE=0
 CURRENT=""
 START_AT=$(date +%s)
 LOG_FILE="/var/log/erpnext_install_$(date +%Y%m%d_%H%M%S).log"
 
 mkdir -p /var/log
-
-# 同步输出到屏幕和日志，并加时间戳
 exec > >(awk '{ print strftime("[%F %T]"), $0 }' | tee -a "$LOG_FILE") 2>&1
 
-function _elapsed() { local s=$1; printf "%ds" "$s"; }
-function _percent() { echo $(( PROGRESS_TOTAL>0 ? (100*PROGRESS_DONE/PROGRESS_TOTAL) : 0 )); }
-function _progress_line() { printf "[%02d/%02d] (%3d%%) %s\n" "$PROGRESS_DONE" "$PROGRESS_TOTAL" "$(_percent)" "${CURRENT:-}"; }
-function begin_section() {
-  CURRENT="$1"
-  SECTION_START=$SECONDS
-  echo
-  echo "────────────────────────────────────────────────────────"
-  echo "▶ 开始步骤：$CURRENT"
-  _progress_line
+function _elapsed(){ local s=$1; printf "%ds" "$s"; }
+function _percent(){
+  local p=0
+  if [ "$PROGRESS_TOTAL" -gt 0 ]; then p=$(( 100 * PROGRESS_DONE / PROGRESS_TOTAL )); fi
+  if [ "$p" -gt 100 ]; then p=100; fi
+  echo "$p"
 }
-function end_section() {
-  local dur=$((SECONDS - SECTION_START))
-  PROGRESS_DONE=$((PROGRESS_DONE + 1))
-  echo "✔ 完成步骤：$CURRENT，耗时 $(_elapsed "$dur")"
-  _progress_line
-  echo "────────────────────────────────────────────────────────"
-  echo
-}
-function note()  { echo "ℹ️ $*"; }
-function warn()  { echo "⚠️ $*"; }
-function fatal() { echo "❌ $*"; }
-
+function _progress_line(){ printf "[%02d/%02d] (%3d%%) %s\n" "$PROGRESS_DONE" "$PROGRESS_TOTAL" "$(_percent)" "${CURRENT:-}"; }
+function begin_section(){ CURRENT="$1"; SECTION_START=$SECONDS; echo; echo "────────────────────────────────────────────────────────"; echo "▶ 开始步骤：$CURRENT"; _progress_line; }
+function end_section(){ local dur=$((SECONDS - SECTION_START)); PROGRESS_DONE=$((PROGRESS_DONE + 1)); echo "✔ 完成步骤：$CURRENT，耗时 $(_elapsed "$dur")"; _progress_line; echo "────────────────────────────────────────────────────────"; echo; }
+function note(){ echo "ℹ️ $*"; }
+function warn(){ echo "⚠️ $*"; }
+function fatal(){ echo "❌ $*"; }
 trap 'code=$?; fatal "出错退出（代码 $code）于步骤：${CURRENT:-未知}"; fatal "最近命令：${BASH_COMMAND}"; fatal "日志文件：$LOG_FILE"; exit $code' ERR
 
 note "全量日志写入：$LOG_FILE"
@@ -90,8 +78,7 @@ frappeBranch="version-15"
 erpnextPath="https://github.com/frappe/erpnext"
 erpnextBranch="version-15"
 siteName="site1.local"
-_siteDbPassword="Pass1234"
-siteDbPassword="${_siteDbPassword}"
+siteDbPassword="Pass1234"
 webPort=""
 productionMode="yes"
 altAptSources="yes"
@@ -210,7 +197,7 @@ end_section
 
 begin_section "APT 源（国内镜像）设置"
 if [[ ${altAptSources} == "yes" ]]; then
-  if [[ ! -e /etc/apt/sources.list.bak ]]; then cp /etc/apt/sources.list /etc/apt/sources.list.bak; fi
+  [[ ! -e /etc/apt/sources.list.bak ]] && cp /etc/apt/sources.list /etc/apt/sources.list.bak
   cat >/etc/apt/sources.list <<'EOF_SOURCES'
 deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse
 deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
@@ -238,99 +225,56 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
 end_section
 
 ############################################
-#  新增：wkhtmltox + 中文字体（含别名）
+#  wkhtmltox + 中文字体（含别名）
 ############################################
 begin_section "安装 wkhtmltox（with patched Qt）与常用中文字体"
-# 1) 移除 apt 版 wkhtmltopdf（若存在）
 apt remove -y wkhtmltopdf || true
+DEBIAN_FRONTEND=noninteractive apt install -y xfonts-75dpi fontconfig || true
 
-# 2) 基础依赖
-DEBIAN_FRONTEND=noninteractive apt install -y xfonts-75dpi || true   # 部分包依赖它
-DEBIAN_FRONTEND=noninteractive apt install -y fontconfig
-
-# 3) 下载官方带 patched Qt 的稳定包（优先 0.12.6-1）
 CODENAME="$(lsb_release -cs 2>/dev/null || echo jammy)"
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 case "$CODENAME" in bionic|focal|jammy) : ;; * ) CODENAME="jammy" ;; esac
 case "$ARCH" in amd64|arm64|ppc64el) : ;; * ) ARCH="amd64" ;; esac
-
 URL1="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.${CODENAME}_${ARCH}.deb"
 URL2="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.jammy_amd64.deb"
-
-if curl -fsI "$URL1" >/dev/null 2>&1; then
-  DEB_URL="$URL1"
-else
-  DEB_URL="$URL2"
-fi
-
+DEB_URL="$URL1"; curl -fsI "$URL1" >/dev/null 2>&1 || DEB_URL="$URL2"
 DEB="/tmp/$(basename "$DEB_URL")"
 echo "→ 下载 $DEB_URL"
 curl -fL "$DEB_URL" -o "$DEB"
-
-# 4) 安装（apt 优先，失败则 dpkg + 修复依赖）
 apt install -y "$DEB" || { dpkg -i "$DEB" || true; apt -f install -y; }
-
-# 5) 版本/特性校验
-if ! command -v wkhtmltopdf >/dev/null 2>&1; then
-  echo "wkhtmltopdf 未安装成功"; exit 1
-fi
-ver="$(wkhtmltopdf -V || true)"
-echo "版本校验：$ver"
+command -v wkhtmltopdf >/dev/null 2>&1 || { echo "wkhtmltopdf 未安装成功"; exit 1; }
+ver="$(wkhtmltopdf -V || true)"; echo "版本校验：$ver"
 echo "$ver" | grep -qi "with patched qt" || { echo "未检测到 with patched qt"; exit 1; }
 
-# 6) 常用中文字体（开源、通用、打印友好）
 DEBIAN_FRONTEND=noninteractive apt install -y \
   fonts-noto-cjk fonts-noto-cjk-extra \
   fonts-wqy-zenhei fonts-wqy-microhei \
   fonts-arphic-uming fonts-arphic-ukai
 
-# 7) 字体别名（把常见公文字体名映射到开源字体）
 cat >/etc/fonts/conf.d/90-cjk-aliases.conf <<'FC_ALIAS'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
-  <!-- 宋体 / 新宋体 / 仿宋 / 楷体：优先 Noto，再兼容 ARPL -->
-  <alias>
-    <family>SimSun</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-      <family>AR PL UMing CN</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>NSimSun</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-      <family>AR PL UMing CN</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>FangSong</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-      <family>AR PL UMing CN</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>KaiTi</family>
-    <prefer>
-      <family>AR PL UKai CN</family>
-      <family>Noto Serif CJK SC</family>
-    </prefer>
-  </alias>
+  <alias><family>SimSun</family><prefer>
+    <family>Noto Serif CJK SC</family><family>AR PL UMing CN</family>
+  </prefer></alias>
+  <alias><family>NSimSun</family><prefer>
+    <family>Noto Serif CJK SC</family><family>AR PL UMing CN</family>
+  </prefer></alias>
+  <alias><family>FangSong</family><prefer>
+    <family>Noto Serif CJK SC</family><family>AR PL UMing CN</family>
+  </prefer></alias>
+  <alias><family>KaiTi</family><prefer>
+    <family>AR PL UKai CN</family><family>Noto Serif CJK SC</family>
+  </prefer></alias>
 </fontconfig>
 FC_ALIAS
-
 fc-cache -f >/dev/null 2>&1 || true
 echo "✅ wkhtmltox + 字体 就绪"
 end_section
 
-############################################
-
 begin_section "环境检查与重复安装目录处理"
 rteArr=(); warnArr=()
-
-# 安装目录冲突处理
 while [[ -d "/home/${userName}/${installDir}" ]]; do
   [[ ${quiet} != "yes" && ${inDocker} != "yes" ]] && clear
   echo "检测到已存在安装目录：/home/${userName}/${installDir}"
@@ -359,44 +303,20 @@ while [[ -d "/home/${userName}/${installDir}" ]]; do
   fi
 done
 
-# Python3
 if command -v python3 >/dev/null 2>&1; then
-  if ! python3 -V | grep -q "3.10"; then
-    warnArr+=("Python 不是推荐的 3.10 版本。")
-    echo '==========已安装python3，但不是推荐的3.10版本。=========='
-  else
-    echo '==========已安装python3.10=========='
-  fi
+  python3 -V | grep -q "3.10" || { warnArr+=("Python 不是推荐的 3.10 版本。"); echo '==========已安装python3，但不是推荐的3.10版本。=========='; }
   rteArr+=("$(python3 -V)")
-else
-  echo "==========python安装失败退出脚本！=========="; exit 1
-fi
+else echo "==========python安装失败退出脚本！=========="; exit 1; fi
 
-# wkhtmltox
 if command -v wkhtmltopdf >/dev/null 2>&1; then
-  if ! wkhtmltopdf -V | grep -q "0.12.6"; then
-    warnArr+=('wkhtmltox 不是推荐的 0.12.6 系列。')
-    echo '==========已存在wkhtmltox，但不是推荐的0.12.6版本。=========='
-  else
-    echo '==========已安装wkhtmltox_0.12.6（with patched Qt）=========='
-  fi
+  wkhtmltopdf -V | grep -q "0.12.6" || { warnArr+=('wkhtmltox 不是推荐的 0.12.6 系列。'); echo '==========已存在wkhtmltox，但不是推荐的0.12.6版本。=========='; }
   rteArr+=("$(wkhtmltopdf -V)")
-else
-  echo "==========wkhtmltox安装失败退出脚本！=========="; exit 1
-fi
+else echo "==========wkhtmltox安装失败退出脚本！=========="; exit 1; fi
 
-# MariaDB
 if command -v mysql >/dev/null 2>&1; then
-  if ! mysql -V | grep -q "10.6"; then
-    warnArr+=('MariaDB 不是推荐的 10.6 版本。')
-    echo '==========已安装MariaDB，但不是推荐的10.6版本。=========='
-  else
-    echo '==========已安装MariaDB10.6=========='
-  fi
+  mysql -V | grep -q "10.6" || { warnArr+=('MariaDB 不是推荐的 10.6 版本。'); echo '==========已安装MariaDB，但不是推荐的10.6版本。=========='; }
   rteArr+=("$(mysql -V)")
-else
-  echo "==========MariaDB安装失败退出脚本！=========="; exit 1
-fi
+else echo "==========MariaDB安装失败退出脚本！=========="; exit 1; fi
 end_section
 
 begin_section "MariaDB 配置与授权"
@@ -491,12 +411,10 @@ if command -v supervisord >/dev/null 2>&1; then
   elif grep -Eq "[ *]restart\)" /etc/init.d/supervisor 2>/dev/null; then
     supervisorCommand="restart"
   else
-    echo "init 脚本未含 reload/restart"
-    warnArr+=("没有找到可用的supervisor重启指令。")
+    echo "init 脚本未含 reload/restart"; warnArr+=("没有找到可用的supervisor重启指令。")
   fi
 else
-  echo "supervisor 未安装"
-  warnArr+=("supervisor 未安装或安装失败，不能使用其管理进程。")
+  echo "supervisor 未安装"; warnArr+=("supervisor 未安装或安装失败，不能使用其管理进程。")
 fi
 echo "可用指令：${supervisorCommand:-无}"
 end_section
@@ -510,16 +428,9 @@ if ! command -v redis-server >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt install -y redis-tools redis-server redis
 fi
 if command -v redis-server >/dev/null 2>&1; then
-  if ! redis-server -v | grep -q "7"; then
-    warnArr+=('redis 不是推荐的 7 版本。')
-    echo '==========已安装redis，但不是推荐的7版本。=========='
-  else
-    echo '==========已安装redis7=========='
-  fi
+  redis-server -v | grep -q "7" || { warnArr+=('redis 不是推荐的 7 版本。'); echo '==========已安装redis，但不是推荐的7版本。=========='; }
   rteArr+=("$(redis-server -v)")
-else
-  echo "==========redis安装失败退出脚本！=========="; exit 1
-fi
+else echo "==========redis安装失败退出脚本！=========="; exit 1; fi
 end_section
 
 begin_section "pip 源与工具升级"
@@ -537,12 +448,10 @@ alias python=python3; alias pip=pip3
 end_section
 
 begin_section "创建用户/组、环境与时区/locale"
-# 用户组
 if ! getent group "${userName}" >/dev/null; then
   gid=1000; while getent group "${gid}" >/dev/null; do gid=$((gid+1)); done
   groupadd -g ${gid} ${userName}
 fi
-# 用户
 if ! id -u "${userName}" >/dev/null 2>&1; then
   uid=1000; while id -u "${uid}" >/dev/null 2>&1; do uid=$((uid+1)); done
   useradd --no-log-init -r -m -u ${uid} -g ${gid:-${uid}} -G sudo ${userName}
@@ -553,16 +462,13 @@ mkdir -p /home/${userName}
 cp -af /root/.pip /home/${userName}/ 2>/dev/null || true
 chown -R ${userName}.${userName} /home/${userName}
 usermod -s /bin/bash ${userName}
-# locale
 sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen; locale-gen
 for f in /root/.bashrc /home/${userName}/.bashrc; do
   sed -i "/^export.*LC_ALL=.*/d;/^export.*LC_CTYPE=.*/d;/^export.*LANG=.*/d" "$f"
   echo -e "export LC_ALL=en_US.UTF-8\nexport LC_CTYPE=en_US.UTF-8\nexport LANG=en_US.UTF-8" >> "$f"
 done
-# 时区
 ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 dpkg-reconfigure -f noninteractive tzdata
-# 文件监控上限
 sed -i "/^fs.inotify.max_user_watches=.*/d" /etc/sysctl.conf
 echo fs.inotify.max_user_watches=524288 | tee -a /etc/sysctl.conf
 /sbin/sysctl -p || true
@@ -599,12 +505,12 @@ yarn config set registry https://registry.npmmirror.com --global
 end_section
 
 begin_section "切换到应用用户，配置用户级 yarn"
-su - ${userName} <<'EOF'
-set -e
+su - ${userName} <<EOF
+set -eo pipefail
 cd ~
 alias python=python3; alias pip=pip3
 source /etc/profile || true
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="\$HOME/.local/bin:\$PATH"
 export LC_ALL=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LANG=en_US.UTF-8
 yarn config set registry https://registry.npmmirror.com --global
 echo "用户级 yarn 源已设置。"
@@ -616,7 +522,6 @@ echo "判断是否适配docker"
 if [[ ${inDocker} == "yes" ]]; then
   supervisorConfigDir=/home/${userName}/.config/supervisor
   mkdir -p ${supervisorConfigDir}
-  # mariadb
   cat >${supervisorConfigDir}/mariadb.conf <<'SUP_MY'
 [program:mariadb]
 command=/usr/sbin/mariadbd --basedir=/usr --datadir=/var/lib/mysql --plugin-dir=/usr/lib/mysql/plugin --user=mysql --skip-log-error
@@ -631,7 +536,6 @@ stdout_logfile_maxbytes=1024MB
 stdout_logfile_backups=10
 stdout_logfile=/var/run/log/supervisor_mysql.log
 SUP_MY
-  # nginx
   cat >${supervisorConfigDir}/nginx.conf <<'SUP_NGX'
 [program: nginx]
 command=/usr/sbin/nginx -g 'daemon off;'
@@ -661,14 +565,10 @@ end_section
 
 begin_section "安装 bench"
 su - ${userName} <<EOF
-set -e
+set -eo pipefail
 echo "===================安装bench==================="
 sudo -H pip3 install "frappe-bench${benchVersion}"
-if type bench >/dev/null 2>&1; then
-  bench --version
-else
-  echo "==========bench安装失败退出脚本！==========" && exit 1
-fi
+if type bench >/dev/null 2>&1; then bench --version; else echo "==========bench安装失败退出脚本！==========" && exit 1; fi
 EOF
 rteArr+=("bench $(su - ${userName} -c 'bench --version 2>/dev/null' || echo unknown)")
 end_section
@@ -677,39 +577,29 @@ begin_section "Docker 情况下 bench 脚本适配（fail2ban 注释）"
 if [[ ${inDocker} == "yes" ]]; then
   f="/usr/local/lib/python3.10/dist-packages/bench/config/production_setup.py"
   n=$(sed -n "/^[[:space:]]*if not which.*fail2ban-client/=" ${f} 2>/dev/null || true)
-  if [[ -n ${n} ]]; then
-    sed -i "${n} s/^/#&/; $((n+1)) s/^/#&/" ${f}
-    echo "已注释 fail2ban 自动安装逻辑。"
-  fi
+  [[ -n ${n} ]] && sed -i "${n} s/^/#&/; $((n+1)) s/^/#&/" ${f} && echo "已注释 fail2ban 自动安装逻辑。"
 else
   note "非 Docker 模式，跳过 bench fail2ban 适配"
 fi
 end_section
 
 begin_section "初始化 frappe（bench init，带重试）"
-su - ${userName} <<'EOF'
-set -euo pipefail
+su - ${userName} <<EOF
+set -eo pipefail
 echo "===================初始化frappe==================="
-INSTALL_DIR="${installDir}"
-FRAPPE_BRANCH_OPT="${frappeBranch}"
-FRAPPE_PATH_OPT="${frappePath}"
 for i in 1 2 3 4 5; do
-  rm -rf "${HOME:?}/${INSTALL_DIR}" || true
+  rm -rf "\$HOME/${installDir}" || true
   set +e
-  bench init ${FRAPPE_BRANCH_OPT} --python /usr/bin/python3 \
-    --skip-redis-config-generation --skip-assets \
-    "${INSTALL_DIR}" ${FRAPPE_PATH_OPT} --verbose
-  status=$?
+  bench init ${frappeBranch} --python /usr/bin/python3 "${installDir}" ${frappePath} --verbose
+  status=\$?
   set -e
-  if [ "$status" -eq 0 ]; then
-    echo "✅ bench init 成功（第 ${i} 次尝试）"
-    break
+  if [ "\$status" -eq 0 ]; then
+    echo "✅ bench init 成功（第 \$i 次尝试）"; break
   fi
-  echo "⚠️ bench init 失败（第 ${i} 次），3 秒后重试..."
-  sleep 3
-  if [ "$i" -eq 5 ]; then
+  echo "⚠️ bench init 失败（第 \$i 次），3 秒后重试..."; sleep 3
+  if [ "\$i" -eq 5 ]; then
     echo "❌ bench init 连续失败，输出最近日志以便排查："
-    find "${HOME}/${INSTALL_DIR}" -maxdepth 3 -type f \( -name "*.log" -o -name "pip-log.txt" -o -name "yarn-error.log" \) -print -exec tail -n 200 {} \; || true
+    find "\$HOME/${installDir}" -maxdepth 3 -type f \\( -name "*.log" -o -name "pip-log.txt" -o -name "yarn-error.log" \\) -print -exec tail -n 200 {} \\; || true
     exit 1
   fi
 done
@@ -717,30 +607,25 @@ EOF
 end_section
 
 begin_section "确认 frappe 初始化结果"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
-frappeV=$(bench version | grep "frappe" || true)
-if [[ -z ${frappeV} ]]; then
-  echo "==========frappe初始化失败退出脚本！=========="; exit 1
-else
-  echo '==========frappe初始化成功=========='
-  echo "${frappeV}"
-fi
+frappeV=\$(bench version | grep "frappe" || true)
+if [[ -z \${frappeV} ]]; then echo "==========frappe初始化失败退出脚本！==========" ; exit 1; else echo '==========frappe初始化成功==========' ; echo "\${frappeV}"; fi
 EOF
 end_section
 
 begin_section "将 wkhtmltopdf 写入 bench 全局配置"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
-bench set-config -g wkhtmltopdf "$(command -v wkhtmltopdf)"
+bench set-config -g wkhtmltopdf "\$(command -v wkhtmltopdf)"
 bench clear-cache
 EOF
 end_section
 
 begin_section "获取应用（erpnext / payments / hrms / print_designer）"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 echo "===================获取应用==================="
@@ -752,7 +637,7 @@ EOF
 end_section
 
 begin_section "建立新站点（bench new-site）"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 echo "===================建立新网站==================="
@@ -761,7 +646,7 @@ EOF
 end_section
 
 begin_section "安装应用到站点"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 echo "===================安装应用到新网站==================="
@@ -773,7 +658,7 @@ EOF
 end_section
 
 begin_section "站点基础配置"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 bench config http_timeout 6000
@@ -783,7 +668,7 @@ EOF
 end_section
 
 begin_section "安装中文本地化（erpnext_chinese）"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 echo "===================安装中文本地化==================="
@@ -794,7 +679,7 @@ EOF
 end_section
 
 begin_section "清理工作台缓存"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 bench clear-cache
@@ -858,12 +743,8 @@ if [[ -n ${webPort} ]]; then
           sed -i "$((n+1)) c listen [::]:${webPort};" ${f}
           /etc/init.d/nginx reload || true
           echo "web端口号修改为：${webPort}"
-        else
-          warnArr+=("找到 ${f}，但未定位到 listen 设置行。")
-        fi
-      else
-        warnArr+=("未找到 ${f}，端口修改失败。")
-      fi
+        else warnArr+=("找到 ${f}，但未定位到 listen 设置行。"); fi
+      else warnArr+=("未找到 ${f}，端口修改失败。"); fi
     else
       f="/home/${userName}/${installDir}/Procfile"
       if [[ -e ${f} ]]; then
@@ -872,12 +753,8 @@ if [[ -n ${webPort} ]]; then
           sed -i "${n} c web: bench serve --port ${webPort}" ${f}
           su - ${userName} -c "cd ~/${installDir}; bench restart" || true
           echo "web端口号修改为：${webPort}"
-        else
-          warnArr+=("找到 ${f}，但未定位到 web: 行。")
-        fi
-      else
-        warnArr+=("未找到 ${f}，端口修改失败。")
-      fi
+        else warnArr+=("找到 ${f}，但未定位到 web: 行。"); fi
+      else warnArr+=("未找到 ${f}，端口修改失败。"); fi
     fi
   else
     warnArr+=("设置的端口号无效，保持默认。")
@@ -897,7 +774,7 @@ rm -rf /var/lib/apt/lists/*
 pip cache purge || true
 npm cache clean --force || true
 yarn cache clean || true
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 npm cache clean --force || true
@@ -906,7 +783,7 @@ EOF
 end_section
 
 begin_section "确认安装版本与环境摘要"
-su - ${userName} <<'EOF'
+su - ${userName} <<EOF
 set -e
 cd ~/"${installDir}"
 echo "===================确认安装==================="
