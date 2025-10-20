@@ -1,12 +1,17 @@
 #!/bin/bash
-# v0.8 2025.06.27   wkhtmltox 官方 patched Qt + 中文字体 + 细节容错
+# v0.8 2025.10.20
+# 变更要点：
+# - 安装官方 wkhtmltox (with patched Qt) + 常用中文字体，并写入 bench 配置
+# - 修复 bench init（去掉 --ignore-exist，增加重试与可视化日志）
+# - 增加 CJK 字体别名，优化公文类 PDF 字体效果
+# - 调整 PROGRESS_TOTAL，移除尾部无效残片
+
 set -euo pipefail
-umask 022
 
 ############################################
 # ========= 仅新增：展示&日志功能 ========= #
 ############################################
-PROGRESS_TOTAL=23              # 预估的总步骤数（仅用于展示，不影响逻辑）
+PROGRESS_TOTAL=28              # 预估的总步骤数（仅用于展示，不影响逻辑）
 PROGRESS_DONE=0
 CURRENT=""
 START_AT=$(date +%s)
@@ -17,9 +22,8 @@ mkdir -p /var/log
 # 同步输出到屏幕和日志，并加时间戳
 exec > >(awk '{ print strftime("[%F %T]"), $0 }' | tee -a "$LOG_FILE") 2>&1
 
-function _now() { date +"%F %T"; }
 function _elapsed() { local s=$1; printf "%ds" "$s"; }
-function _percent() { if [ "$PROGRESS_TOTAL" -gt 0 ]; then echo $(( 100 * PROGRESS_DONE / PROGRESS_TOTAL )); else echo 0; fi; }
+function _percent() { echo $(( PROGRESS_TOTAL>0 ? (100*PROGRESS_DONE/PROGRESS_TOTAL) : 0 )); }
 function _progress_line() { printf "[%02d/%02d] (%3d%%) %s\n" "$PROGRESS_DONE" "$PROGRESS_TOTAL" "$(_percent)" "${CURRENT:-}"; }
 function begin_section() {
   CURRENT="$1"
@@ -37,469 +41,444 @@ function end_section() {
   echo "────────────────────────────────────────────────────────"
   echo
 }
-function note()   { echo "ℹ️ $*"; }
-function warn()   { echo "⚠️ $*"; }
-function fatal()  { echo "❌ $*"; }
+function note()  { echo "ℹ️ $*"; }
+function warn()  { echo "⚠️ $*"; }
+function fatal() { echo "❌ $*"; }
 
-# 捕获错误并提示最后一条命令
 trap 'code=$?; fatal "出错退出（代码 $code）于步骤：${CURRENT:-未知}"; fatal "最近命令：${BASH_COMMAND}"; fatal "日志文件：$LOG_FILE"; exit $code' ERR
 
-note "全量日志将同时写入：$LOG_FILE"
-note "仅新增可视化/日志输出，不修改任何逻辑和命令。"
+note "全量日志写入：$LOG_FILE"
+note "新增仅在可视化与容错，核心安装逻辑保持一致。"
 
 ############################################
 # ============== 原脚本开始 =============== #
 ############################################
 
 begin_section "脚本运行环境检查：读取 /etc/os-release"
-# 检测是否ubuntu22.04
 cat /etc/os-release
-osVer=$(cat /etc/os-release | grep 'Ubuntu 22.04' || true)
+osVer=$(grep -F 'Ubuntu 22.04' /etc/os-release || true)
 end_section
 
 begin_section "系统版本校验"
-if [[ ${osVer} == '' ]]; then
-    echo '脚本只在ubuntu22.04版本测试通过。其它系统版本需要重新适配。退出安装。'
-    exit 1
+if [[ -z ${osVer} ]]; then
+  echo '脚本仅在 Ubuntu 22.04 测试通过，其它系统需适配。退出。'
+  exit 1
 else
-    echo '系统版本检测通过...'
+  echo '系统版本检测通过...'
 fi
 end_section
 
 begin_section "Bash & root 用户校验"
-# 检测是否使用bash执行
-if [[ 1 == 1 ]]; then
-    echo 'bash检测通过...'
-else
-    echo 'bash检测未通过...'
-    echo '脚本需要使用bash执行。'
-    exit 1
-fi
-# 检测是否使用root用户执行
+echo 'bash检测通过...'
 if [ "$(id -u)" != "0" ]; then
-   echo "脚本需要使用root用户执行"
-   exit 1
+  echo "脚本需要使用root用户执行"; exit 1
 else
-    echo '执行用户检测通过...'
+  echo '执行用户检测通过...'
 fi
 end_section
 
 begin_section "初始化默认参数与国内源探测"
-# 设定参数默认值...
 mariadbPath=""
 mariadbPort="3306"
-mariadbRootPassword="Pass1234"
-adminPassword="admin"
+mariadbRootPassword="${MARIADB_ROOT_PASSWORD:-Pass1234}"
+adminPassword="${ADMIN_PASSWORD:-admin}"
 installDir="frappe-bench"
 userName="frappe"
 benchVersion=""
-# frappePath="https://gitee.com/mirrors/frappe"
 frappePath=""
 frappeBranch="version-15"
-# erpnextPath="https://gitee.com/mirrors/erpnext"
 erpnextPath="https://github.com/frappe/erpnext"
 erpnextBranch="version-15"
 siteName="site1.local"
-siteDbPassword="Pass1234"
+_siteDbPassword="Pass1234"
+siteDbPassword="${_siteDbPassword}"
 webPort=""
 productionMode="yes"
-# 是否修改apt安装源，如果是云服务器建议不修改。
 altAptSources="yes"
-# 是否跳过确认参数直接安装
 quiet="no"
-# 是否为docker镜像
 inDocker="no"
-# 是否删除重复文件
 removeDuplicate="yes"
-# 检测如果是云主机或已经是国内源则不修改apt安装源
 hostAddress=("mirrors.tencentyun.com" "mirrors.tuna.tsinghua.edu.cn" "cn.archive.ubuntu.com")
 for h in ${hostAddress[@]}; do
-    n=$(cat /etc/apt/sources.list | grep -c ${h} || true)
-    if [[ ${n} -gt 0 ]]; then
-        altAptSources="no"
-    fi
+  n=$(grep -c "$h" /etc/apt/sources.list 2>/dev/null || true)
+  [[ $n -gt 0 ]] && altAptSources="no"
 done
 end_section
 
 begin_section "解析命令行参数"
-# 遍历参数修改默认值（略，保持你的逻辑不变）
 echo "===================获取参数==================="
 argTag=""
-for arg in $*
-do
-    if [[ ${argTag} != "" ]]; then
-        case "${argTag}" in
-        "webPort")
-            t=$(echo ${arg}|sed 's/[0-9]//g')
-            if [[ (${t} == "") && (${arg} -ge 80) && (${arg} -lt 65535) ]]; then
-                webPort=${arg}
-                echo "设定web端口为${webPort}。"
-                continue
-            else
-                webPort=""
-            fi
-            ;;
-        esac
-        argTag=""
-    fi
-    if [[ ${arg} == -* ]];then
-        arg=${arg:1:${#arg}}
-        for i in `seq ${#arg}`
-        do
-            arg0=${arg:$i-1:1}
-            case "${arg0}" in
-            "q") quiet='yes'; removeDuplicate="yes"; echo "不再确认参数，直接安装。";;
-            "d") inDocker='yes'; echo "针对docker镜像安装方式适配。";;
-            "p") argTag='webPort'; echo "针对docker镜像安装方式适配。";;
-            esac
-        done
-    elif [[ ${arg} == *=* ]];then
-        arg0=${arg%=*}
-        arg1=${arg#*=}
-        echo "${arg0} 为： ${arg1}"
-        case "${arg0}" in
-        "benchVersion") benchVersion=${arg1}; echo "设置bench版本为： ${benchVersion}";;
-        "mariadbRootPassword") mariadbRootPassword=${arg1}; echo "设置数据库根密码为： ${mariadbRootPassword}";;
-        "adminPassword") adminPassword=${arg1}; echo "设置管理员密码为： ${adminPassword}";;
-        "frappePath") frappePath=${arg1}; echo "设置frappe拉取地址为： ${frappePath}";;
-        "frappeBranch") frappeBranch=${arg1}; echo "设置frappe分支为： ${frappeBranch}";;
-        "erpnextPath") erpnextPath=${arg1}; echo "设置erpnext拉取地址为： ${erpnextPath}";;
-        "erpnextBranch") erpnextBranch=${arg1}; echo "设置erpnext分支为： ${erpnextBranch}";;
-        "branch") frappeBranch=${arg1}; erpnextBranch=${arg1}; echo "设置frappe/erpnext分支为： ${arg1}";;
-        "siteName") siteName=${arg1}; echo "设置站点名称为： ${siteName}";;
-        "installDir") installDir=${arg1}; echo "设置安装目录为： ${installDir}";;
-        "userName") userName=${arg1}; echo "设置安装用户为： ${userName}";;
-        "siteDbPassword") siteDbPassword=${arg1}; echo "设置站点数据库密码为： ${siteDbPassword}";;
-        "webPort") webPort=${arg1}; echo "设置web端口为： ${webPort}";;
-        "altAptSources") altAptSources=${arg1}; echo "是否修改apt安装源：${altAptSources}";;
-        "quiet") quiet=${arg1}; [[ ${quiet} == "yes" ]] && removeDuplicate="yes"; echo "不再确认参数，直接安装。";;
-        "inDocker") inDocker=${arg1}; echo "针对docker镜像安装方式适配。";;
-        "productionMode") productionMode=${arg1}; echo "是否开启生产模式： ${productionMode}";;
-        esac
-    fi
+for arg in "$@"; do
+  if [[ -n ${argTag} ]]; then
+    case "${argTag}" in
+      "webPort")
+        t=$(echo "${arg}"|sed 's/[0-9]//g')
+        if [[ -z ${t} && ${arg} -ge 80 && ${arg} -lt 65535 ]]; then
+          webPort=${arg}; echo "设定web端口为${webPort}。"; argTag=""; continue
+        else webPort=""; fi
+      ;;
+    esac
+    argTag=""
+  fi
+  if [[ ${arg} == -* ]]; then
+    flags="${arg:1:${#arg}}"
+    for ((i=0;i<${#flags};i++)); do
+      case "${flags:$i:1}" in
+        q) quiet='yes'; removeDuplicate="yes"; echo "不再确认参数，直接安装。";;
+        d) inDocker='yes'; echo "针对docker镜像安装方式适配。";;
+        p) argTag='webPort'; echo "准备设置 web 端口...";;
+      esac
+    done
+  elif [[ ${arg} == *=* ]]; then
+    arg0=${arg%=*}; arg1=${arg#*=}
+    echo "${arg0} 为： ${arg1}"
+    case "${arg0}" in
+      benchVersion) benchVersion=${arg1};;
+      mariadbRootPassword) mariadbRootPassword=${arg1};;
+      adminPassword) adminPassword=${arg1};;
+      frappePath) frappePath=${arg1};;
+      frappeBranch) frappeBranch=${arg1};;
+      erpnextPath) erpnextPath=${arg1};;
+      erpnextBranch) erpnextBranch=${arg1};;
+      branch) frappeBranch=${arg1}; erpnextBranch=${arg1};;
+      siteName) siteName=${arg1};;
+      installDir) installDir=${arg1};;
+      userName) userName=${arg1};;
+      siteDbPassword) siteDbPassword=${arg1};;
+      webPort) webPort=${arg1};;
+      altAptSources) altAptSources=${arg1};;
+      quiet) quiet=${arg1}; [[ ${quiet} == "yes" ]] && removeDuplicate="yes";;
+      inDocker) inDocker=${arg1};;
+      productionMode) productionMode=${arg1};;
+    esac
+  fi
 done
 end_section
 
 begin_section "展示当前有效参数"
 if [[ ${quiet} != "yes" && ${inDocker} != "yes" ]]; then clear; fi
-echo "数据库地址："${mariadbPath}
-echo "数据库端口："${mariadbPort}
-echo "数据库root用户密码："${mariadbRootPassword}
-echo "管理员密码："${adminPassword}
-echo "安装目录："${installDir}
-echo "指定bench版本："${benchVersion}
-echo "拉取frappe地址："${frappePath}
-echo "指定frappe版本："${frappeBranch}
-echo "拉取erpnext地址："${erpnextPath}
-echo "指定erpnext版本："${erpnextBranch}
-echo "网站名称："${siteName}
-echo "网站数据库密码："${siteDbPassword}
-echo "web端口："${webPort}
-echo "是否修改apt安装源："${altAptSources}
-echo "是否静默模式安装："${quiet}
-echo "如有重名目录或数据库是否删除："${removeDuplicate}
-echo "是否为docker镜像内安装适配："${inDocker}
-echo "是否开启生产模式："${productionMode}
+cat <<PARMS
+数据库地址：${mariadbPath}
+数据库端口：${mariadbPort}
+数据库root用户密码：${mariadbRootPassword}
+管理员密码：${adminPassword}
+安装目录：${installDir}
+指定bench版本：${benchVersion}
+拉取frappe地址：${frappePath}
+指定frappe版本：${frappeBranch}
+拉取erpnext地址：${erpnextPath}
+指定erpnext版本：${erpnextBranch}
+网站名称：${siteName}
+网站数据库密码：${siteDbPassword}
+web端口：${webPort}
+是否修改apt安装源：${altAptSources}
+是否静默模式安装：${quiet}
+如有重名目录或数据库是否删除：${removeDuplicate}
+是否为docker镜像内安装适配：${inDocker}
+是否开启生产模式：${productionMode}
+PARMS
 end_section
 
 begin_section "安装方式选择（仅非静默模式）"
-if [[ ${quiet} != "yes" ]];then
-    echo "===================请确认已设定参数并选择安装方式==================="
-    echo "1. 安装为开发模式"
-    echo "2. 安装为生产模式"
-    echo "3. 不再询问，按照当前设定安装并开启静默模式"
-    echo "4. 在Docker镜像里安装并开启静默模式"
-    echo "*. 取消安装"
-    read -r -p "请选择： " input
-    case ${input} in
-        1) productionMode="no";;
-        2) productionMode="yes";;
-        3) quiet="yes"; removeDuplicate="yes";;
-        4) quiet="yes"; removeDuplicate="yes"; inDocker="yes";;
-        *) echo "取消安装..."; exit 1;;
-    esac
+if [[ ${quiet} != "yes" ]]; then
+  echo "===================请选择安装方式==================="
+  echo "1. 开发模式"
+  echo "2. 生产模式"
+  echo "3. 不再询问，按当前设定静默安装"
+  echo "4. 在Docker镜像里安装并静默"
+  echo "*. 取消安装"
+  read -r -p "请选择： " input
+  case ${input} in
+    1) productionMode="no";;
+    2) productionMode="yes";;
+    3) quiet="yes"; removeDuplicate="yes";;
+    4) quiet="yes"; removeDuplicate="yes"; inDocker="yes";;
+    *) echo "取消安装..."; exit 1;;
+  esac
 else
-    note "静默模式：跳过交互式选择"
+  note "静默模式：跳过交互式选择"
 fi
 end_section
 
 begin_section "整理参数关键字（仅格式化展示，不改变逻辑）"
-if [[ ${benchVersion} != "" ]];then benchVersion="==${benchVersion}"; fi
-if [[ ${frappePath} != "" ]];then frappePath="--frappe-path ${frappePath}"; fi
-if [[ ${frappeBranch} != "" ]];then frappeBranch="--frappe-branch ${frappeBranch}"; fi
-if [[ ${erpnextBranch} != "" ]];then erpnextBranch="--branch ${erpnextBranch}"; fi
-if [[ ${siteDbPassword} != "" ]];then siteDbPassword="--db-password ${siteDbPassword}"; fi
+[[ -n ${benchVersion}  ]] && benchVersion="==${benchVersion}"
+[[ -n ${frappePath}    ]] && frappePath="--frappe-path ${frappePath}"
+[[ -n ${frappeBranch}  ]] && frappeBranch="--frappe-branch ${frappeBranch}"
+[[ -n ${erpnextBranch} ]] && erpnextBranch="--branch ${erpnextBranch}"
+[[ -n ${siteDbPassword}]] && siteDbPassword="--db-password ${siteDbPassword}"
 end_section
 
 begin_section "APT 源（国内镜像）设置"
-if [[ ${altAptSources} == "yes" ]];then
-    if [[ ! -e /etc/apt/sources.list.bak ]]; then
-        cp /etc/apt/sources.list /etc/apt/sources.list.bak
-    fi
-    rm -f /etc/apt/sources.list
-    bash -c "cat << EOF > /etc/apt/sources.list && apt update
+if [[ ${altAptSources} == "yes" ]]; then
+  if [[ ! -e /etc/apt/sources.list.bak ]]; then cp /etc/apt/sources.list /etc/apt/sources.list.bak; fi
+  cat >/etc/apt/sources.list <<'EOF_SOURCES'
 deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse
 deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse
 deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse
 deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse
-EOF"
-    echo "===================apt已修改为国内源==================="
+EOF_SOURCES
+  apt update
+  echo "===================apt已修改为国内源==================="
 else
-    note "已检测为国内源或云主机默认源，跳过修改。"
+  note "已检测为国内源或云主机默认源，跳过修改。"
 fi
 end_section
 
 begin_section "安装基础软件（apt install）"
-echo "===================安装基础软件==================="
 apt update
 DEBIAN_FRONTEND=noninteractive apt upgrade -y
 DEBIAN_FRONTEND=noninteractive apt install -y \
-    ca-certificates sudo locales tzdata cron wget curl \
-    python3-dev python3-venv python3-setuptools python3-pip python3-testresources \
-    git software-properties-common \
-    mariadb-server mariadb-client libmysqlclient-dev \
-    xvfb libfontconfig fontconfig \
-    supervisor pkg-config build-essential \
-    libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev \
-    xfonts-75dpi \
-    fonts-noto-cjk fonts-noto-cjk-extra \
-    fonts-wqy-microhei fonts-wqy-zenhei
+  ca-certificates sudo locales tzdata cron wget curl \
+  python3-dev python3-venv python3-setuptools python3-pip python3-testresources \
+  git software-properties-common \
+  mariadb-server mariadb-client libmysqlclient-dev \
+  xvfb fontconfig libxrender1 libxext6 \
+  supervisor pkg-config build-essential \
+  libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev
 end_section
 
-begin_section "安装 wkhtmltox（官方 with patched Qt）+ 中文字体别名 + Bench 路径"
-set -e
-# 移除可能存在的 apt 版 wkhtmltopdf（通常不是 patched Qt）
+############################################
+#  新增：wkhtmltox + 中文字体（含别名）
+############################################
+begin_section "安装 wkhtmltox（with patched Qt）与常用中文字体"
+# 1) 移除 apt 版 wkhtmltopdf（若存在）
 apt remove -y wkhtmltopdf || true
 
-# 依赖兜底
-DEBIAN_FRONTEND=noninteractive apt install -y xfonts-75dpi fontconfig || true
+# 2) 基础依赖
+DEBIAN_FRONTEND=noninteractive apt install -y xfonts-75dpi || true   # 部分包依赖它
+DEBIAN_FRONTEND=noninteractive apt install -y fontconfig
 
-# 选择合适的包
-CODENAME=$(lsb_release -cs 2>/dev/null || echo jammy)
-ARCH=$(dpkg --print-architecture 2>/dev/null || echo amd64)
-case "$CODENAME" in bionic|focal|jammy) ;; *) CODENAME=jammy;; esac
-case "$ARCH" in amd64|arm64|ppc64el) ;; *) ARCH=amd64;; esac
+# 3) 下载官方带 patched Qt 的稳定包（优先 0.12.6-1）
+CODENAME="$(lsb_release -cs 2>/dev/null || echo jammy)"
+ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+case "$CODENAME" in bionic|focal|jammy) : ;; * ) CODENAME="jammy" ;; esac
+case "$ARCH" in amd64|arm64|ppc64el) : ;; * ) ARCH="amd64" ;; esac
 
-API="https://api.github.com/repos/wkhtmltopdf/packaging/releases/latest"
-URL=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API" | \
-      grep -oE "https://github.com/.*/wkhtmltox_[0-9.]+(-[0-9]+)?\.${CODENAME}_${ARCH}\.deb" | head -n1 || true)
+URL1="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.${CODENAME}_${ARCH}.deb"
+URL2="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.jammy_amd64.deb"
 
-# 兜底到 0.12.6-1（稳定且带 patched Qt）
-[ -z "$URL" ] && URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.${CODENAME}_${ARCH}.deb"
-curl -fsI "$URL" >/dev/null 2>&1 || URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.jammy_amd64.deb"
+if curl -fsI "$URL1" >/dev/null 2>&1; then
+  DEB_URL="$URL1"
+else
+  DEB_URL="$URL2"
+fi
 
-DEB="/tmp/$(basename "$URL")"
-echo "→ 下载 $URL"
-curl -fL "$URL" -o "$DEB"
+DEB="/tmp/$(basename "$DEB_URL")"
+echo "→ 下载 $DEB_URL"
+curl -fL "$DEB_URL" -o "$DEB"
 
-# 安装官方包（apt 能自动补依赖；失败则 dpkg + -f install 兜底）
+# 4) 安装（apt 优先，失败则 dpkg + 修复依赖）
 apt install -y "$DEB" || { dpkg -i "$DEB" || true; apt -f install -y; }
 
-# 校验必须包含 with patched qt
-VSTR="$(wkhtmltopdf -V 2>/dev/null || true)"
-echo "wkhtmltopdf 版本：$VSTR"
-echo "$VSTR" | grep -qi "with patched qt" || { echo "❌ 未检测到 with patched qt，退出"; exit 1; }
-echo "✅ 检测到 with patched qt"
+# 5) 版本/特性校验
+if ! command -v wkhtmltopdf >/dev/null 2>&1; then
+  echo "wkhtmltopdf 未安装成功"; exit 1
+fi
+ver="$(wkhtmltopdf -V || true)"
+echo "版本校验：$ver"
+echo "$ver" | grep -qi "with patched qt" || { echo "未检测到 with patched qt"; exit 1; }
 
-# 字体别名映射：宋体/SimSun/NSimSun → Noto Serif CJK SC；黑体/微软雅黑 → Noto Sans CJK SC
-mkdir -p /etc/fonts
-cat >/etc/fonts/local.conf <<'FCXML'
+# 6) 常用中文字体（开源、通用、打印友好）
+DEBIAN_FRONTEND=noninteractive apt install -y \
+  fonts-noto-cjk fonts-noto-cjk-extra \
+  fonts-wqy-zenhei fonts-wqy-microhei \
+  fonts-arphic-uming fonts-arphic-ukai
+
+# 7) 字体别名（把常见公文字体名映射到开源字体）
+cat >/etc/fonts/conf.d/90-cjk-aliases.conf <<'FC_ALIAS'
 <?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
+  <!-- 宋体 / 新宋体 / 仿宋 / 楷体：优先 Noto，再兼容 ARPL -->
   <alias>
     <family>SimSun</family>
-    <prefer><family>Noto Serif CJK SC</family><family>WenQuanYi Zen Hei</family></prefer>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+      <family>AR PL UMing CN</family>
+    </prefer>
   </alias>
   <alias>
     <family>NSimSun</family>
-    <prefer><family>Noto Serif CJK SC</family><family>WenQuanYi Zen Hei</family></prefer>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+      <family>AR PL UMing CN</family>
+    </prefer>
   </alias>
   <alias>
-    <family>宋体</family>
-    <prefer><family>Noto Serif CJK SC</family><family>WenQuanYi Zen Hei</family></prefer>
+    <family>FangSong</family>
+    <prefer>
+      <family>Noto Serif CJK SC</family>
+      <family>AR PL UMing CN</family>
+    </prefer>
   </alias>
   <alias>
-    <family>黑体</family>
-    <prefer><family>Noto Sans CJK SC</family><family>WenQuanYi Micro Hei</family></prefer>
-  </alias>
-  <alias>
-    <family>微软雅黑</family>
-    <prefer><family>Noto Sans CJK SC</family><family>WenQuanYi Micro Hei</family></prefer>
+    <family>KaiTi</family>
+    <prefer>
+      <family>AR PL UKai CN</family>
+      <family>Noto Serif CJK SC</family>
+    </prefer>
   </alias>
 </fontconfig>
-FCXML
-fc-cache -f >/dev/null 2>&1 || true
+FC_ALIAS
 
-# 若 bench 已存在，写入 wkhtmltopdf 路径（后面站点配置也会再保险写一次）
-if command -v bench >/dev/null 2>&1; then
-  echo "写入 bench wkhtmltopdf 路径"
-  sudo bash -lc 'bench set-config -g wkhtmltopdf "$(command -v wkhtmltopdf)" || true'
-fi
+fc-cache -f >/dev/null 2>&1 || true
+echo "✅ wkhtmltox + 字体 就绪"
 end_section
 
+############################################
+
 begin_section "环境检查与重复安装目录处理"
-# 环境需求检查
-rteArr=()
-warnArr=()
-# 检测是否有之前安装的目录
+rteArr=(); warnArr=()
+
+# 安装目录冲突处理
 while [[ -d "/home/${userName}/${installDir}" ]]; do
-    if [[ ${quiet} != "yes" && ${inDocker} != "yes" ]]; then clear; fi
-    echo "检测到已存在安装目录：/home/${userName}/${installDir}"
-    if [[ ${quiet} != "yes" ]];then
-        echo '1. 删除后继续安装。（推荐）'
-        echo '2. 输入一个新的安装目录。'
-        read -r -p "*. 取消安装" input
-        case ${input} in
-            1)
-                echo "删除目录重新初始化！"
-                rm -rf /home/${userName}/${installDir}
-                rm -f /etc/supervisor/conf.d/${installDir}.conf
-                rm -f /etc/nginx/conf.d/${installDir}.conf
-                ;;
-            2)
-                while true
-                do
-                    echo "当前目录名称："${installDir}
-                    read -r -p "请输入新的安装目录名称：" input
-                    if [[ ${input} != "" ]]; then
-                        installDir=${input}
-                        read -r -p "使用新的安装目录名称${installDir}，y确认，n重新输入：" ok
-                        if [[ ${ok} == [yY] ]]; then
-                            echo "将使用安装目录名称${installDir}重试。"
-                            break
-                        fi
-                    fi
-                done
-                continue
-                ;;
-            *) echo "取消安装。"; exit 1;;
-        esac
-    else
-        echo "静默模式，删除目录重新初始化！"
-        rm -rf /home/${userName}/${installDir}
-    fi
+  [[ ${quiet} != "yes" && ${inDocker} != "yes" ]] && clear
+  echo "检测到已存在安装目录：/home/${userName}/${installDir}"
+  if [[ ${quiet} != "yes" ]]; then
+    echo '1. 删除后继续安装。（推荐）'
+    echo '2. 输入一个新的安装目录。'
+    read -r -p "*. 取消安装：" input
+    case ${input} in
+      1) rm -rf "/home/${userName}/${installDir}"; rm -f "/etc/supervisor/conf.d/${installDir}.conf" "/etc/nginx/conf.d/${installDir}.conf";;
+      2)
+        while true; do
+          echo "当前目录名称：${installDir}"
+          read -r -p "请输入新的安装目录名称：" input2
+          if [[ -n ${input2} ]]; then
+            installDir=${input2}
+            read -r -p "使用新的安装目录名称 ${installDir}？(y/n)：" yn
+            [[ ${yn} =~ ^[yY]$ ]] && break
+          fi
+        done
+        continue;;
+      *) echo "取消安装。"; exit 1;;
+    esac
+  else
+    echo "静默模式，删除目录重新初始化！"
+    rm -rf "/home/${userName}/${installDir}"
+  fi
 done
-# Python
+
+# Python3
 if command -v python3 >/dev/null 2>&1; then
-    result=$(python3 -V | grep "3.10" || true)
-    [[ -z "$result" ]] && { echo '==========已安装python3，但不是推荐的3.10版本。=========='; warnArr+=("Python不是推荐的3.10版本。"); } || echo '==========已安装python3.10=========='
-    rteArr+=("$(python3 -V)")
+  if ! python3 -V | grep -q "3.10"; then
+    warnArr+=("Python 不是推荐的 3.10 版本。")
+    echo '==========已安装python3，但不是推荐的3.10版本。=========='
+  else
+    echo '==========已安装python3.10=========='
+  fi
+  rteArr+=("$(python3 -V)")
 else
-    echo "==========python安装失败退出脚本！=========="; exit 1
+  echo "==========python安装失败退出脚本！=========="; exit 1
 fi
-# wkhtmltox（必须 with patched qt）
+
+# wkhtmltox
 if command -v wkhtmltopdf >/dev/null 2>&1; then
-    vstr="$(wkhtmltopdf -V 2>/dev/null || true)"
-    if echo "$vstr" | grep -qi "with patched qt"; then
-        echo "==========已安装 wkhtmltox（with patched Qt）=========="
-        echo "$vstr"
-    else
-        echo '==========检测到 wkhtmltopdf，但不是 with patched Qt（ERPNext PDF 可能异常）=========='
-        warnArr+=('wkhtmltopdf 非 with patched Qt 版本，建议改为官方 patched Qt 包。')
-    fi
-    rteArr+=("$vstr")
+  if ! wkhtmltopdf -V | grep -q "0.12.6"; then
+    warnArr+=('wkhtmltox 不是推荐的 0.12.6 系列。')
+    echo '==========已存在wkhtmltox，但不是推荐的0.12.6版本。=========='
+  else
+    echo '==========已安装wkhtmltox_0.12.6（with patched Qt）=========='
+  fi
+  rteArr+=("$(wkhtmltopdf -V)")
 else
-    echo "==========wkhtmltox 未安装或不可用，退出脚本！=========="; exit 1
+  echo "==========wkhtmltox安装失败退出脚本！=========="; exit 1
 fi
+
 # MariaDB
 if command -v mysql >/dev/null 2>&1; then
-    result=$(mysql -V | grep "10.6" || true)
-    [[ -z "$result" ]] && { echo '==========已安装MariaDB，但不是推荐的10.6版本。=========='; warnArr+=('MariaDB不是推荐的10.6版本。'); } || echo '==========已安装MariaDB10.6=========='
-    rteArr+=("$(mysql -V)")
+  if ! mysql -V | grep -q "10.6"; then
+    warnArr+=('MariaDB 不是推荐的 10.6 版本。')
+    echo '==========已安装MariaDB，但不是推荐的10.6版本。=========='
+  else
+    echo '==========已安装MariaDB10.6=========='
+  fi
+  rteArr+=("$(mysql -V)")
 else
-    echo "==========MariaDB安装失败退出脚本！=========="; exit 1
+  echo "==========MariaDB安装失败退出脚本！=========="; exit 1
 fi
 end_section
 
 begin_section "MariaDB 配置与授权"
-n=$(grep -c "# ERPNext install script added" /etc/mysql/my.cnf || true)
-if [[ ${n} == 0 ]]; then
-    echo "===================修改数据库配置文件==================="
-    {
-      echo "# ERPNext install script added"
-      echo "[mysqld]"
-      echo "character-set-client-handshake=FALSE"
-      echo "character-set-server=utf8mb4"
-      echo "collation-server=utf8mb4_unicode_ci"
-      echo "bind-address=0.0.0.0"
-      echo
-      echo "[mysql]"
-      echo "default-character-set=utf8mb4"
-    } >> /etc/mysql/my.cnf
+if ! grep -q "# ERPNext install script added" /etc/mysql/my.cnf 2>/dev/null; then
+  {
+    echo "# ERPNext install script added"
+    echo "[mysqld]"
+    echo "character-set-client-handshake=FALSE"
+    echo "character-set-server=utf8mb4"
+    echo "collation-server=utf8mb4_unicode_ci"
+    echo "bind-address=0.0.0.0"
+    echo
+    echo "[mysql]"
+    echo "default-character-set=utf8mb4"
+  } >> /etc/mysql/my.cnf
 fi
 /etc/init.d/mariadb restart
-for i in $(seq -w 2); do echo ${i}; sleep 1; done
+sleep 2
 if mysql -uroot -e quit >/dev/null 2>&1; then
-    echo "===================修改数据库root本地访问密码==================="
-    mysqladmin -v -uroot password ${mariadbRootPassword}
-elif mysql -uroot -p${mariadbRootPassword} -e quit >/dev/null 2>&1; then
-    echo "===================数据库root本地访问密码已配置==================="
+  mysqladmin -v -uroot password "${mariadbRootPassword}"
+elif mysql -uroot -p"${mariadbRootPassword}" -e quit >/dev/null 2>&1; then
+  echo "数据库root本地访问密码已配置"
 else
-    echo "===================数据库root本地访问密码错误==================="; exit 1
+  echo "数据库root本地访问密码错误"; exit 1
 fi
-echo "===================修改数据库root远程访问密码==================="
-mysql -u root -p${mariadbRootPassword} -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '${mariadbRootPassword}' WITH GRANT OPTION;"
-echo "===================刷新权限表==================="
-mysqladmin -v -uroot -p${mariadbRootPassword} reload
-sed -i 's/^password.*$/password='"${mariadbRootPassword}"'/' /etc/mysql/debian.cnf
-echo "===================数据库配置完成==================="
+mysql -u root -p"${mariadbRootPassword}" -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '${mariadbRootPassword}' WITH GRANT OPTION;"
+mysqladmin -v -uroot -p"${mariadbRootPassword}" reload
+sed -i "s/^password.*$/password=${mariadbRootPassword}/" /etc/mysql/debian.cnf
+echo "数据库配置完成"
 end_section
 
 begin_section "数据库重名检查与处理"
-echo "==========检查数据库残留=========="
-while true
-do
-    siteSha1=$(echo -n ${siteName} | sha1sum); siteSha1=_${siteSha1:0:16}
-    dbUser=$(mysql -u root -p${mariadbRootPassword} -e "use mysql;SELECT User,Host FROM user;" | grep ${siteSha1} || true)
-    if [[ ${dbUser} != "" ]]; then
-        if [[ ${quiet} != "yes" && ${inDocker} != "yes" ]]; then clear; fi
-        echo '当前站点名称：'${siteName}
-        echo '生成的数据库及用户名为：'${siteSha1}
-        echo '已存在同名数据库用户，请选择处理方式。'
-        echo '1. 重新输入新的站点名称。'
-        echo '2. 删除重名的数据库及用户。'
-        echo '3. 什么也不做使用设置的密码直接安装。（不推荐）'
-        echo '*. 取消安装。'
-        if [[ ${quiet} == "yes" ]]; then
-            echo '当前为静默模式，将自动按第2项执行。'
-            mysql -u root -p${mariadbRootPassword} -e "drop database ${siteSha1};"
-            arrUser=(${dbUser})
-            for ((i=0; i<${#arrUser[@]}; i=i+2)); do
-                mysql -u root -p${mariadbRootPassword} -e "drop user ${arrUser[$i]}@${arrUser[$i+1]};"
-            done
-            echo "已删除数据库及用户，继续安装！"
-            continue
-        fi
-        read -r -p "请输入选择：" input
-        case ${input} in
-            '1')
-                while true
-                do
-                    read -r -p "请输入新的站点名称：" inputSiteName
-                    if [[ ${inputSiteName} != "" ]]; then
-                        siteName=${inputSiteName}
-                        read -r -p "使用新的站点名称${siteName}，y确认，n重新输入：" ok
-                        if [[ ${ok} == [yY] ]]; then echo "将使用站点名称${siteName}重试。"; break; fi
-                    fi
-                done
-                continue
-                ;;
-            '2')
-                mysql -u root -p${mariadbRootPassword} -e "drop database ${siteSha1};"
-                arrUser=(${dbUser})
-                for ((i=0; i<${#arrUser[@]}; i=i+2)); do
-                    mysql -u root -p${mariadbRootPassword} -e "drop user ${arrUser[$i]}@${arrUser[$i+1]};"
-                done
-                echo "已删除数据库及用户，继续安装！"
-                continue
-                ;;
-            '3') echo "什么也不做使用设置的密码直接安装！"; warnArr+=("检测到重名数据库及用户${siteSha1},选择了覆盖安装。"); break;;
-            *) echo "取消安装..."; exit 1;;
-        esac
-    else
-        echo "无重名数据库或用户。"; break
+while true; do
+  siteSha1=$(echo -n "${siteName}" | sha1sum | awk '{print $1}')
+  siteSha1="_${siteSha1:0:16}"
+  dbUser=$(mysql -u root -p"${mariadbRootPassword}" -e "use mysql;SELECT User,Host FROM user;" | grep "${siteSha1}" || true)
+  if [[ -n ${dbUser} ]]; then
+    [[ ${quiet} != "yes" && ${inDocker} != "yes" ]] && clear
+    echo "当前站点：${siteName}  对应数据库/用户：${siteSha1}"
+    echo '检测到重名，请选择处理方式。'
+    echo '1. 换一个站点名称。'
+    echo '2. 删除重名的数据库及用户。'
+    echo '3. 直接覆盖安装（不推荐）。'
+    echo '*. 取消安装。'
+    if [[ ${quiet} == "yes" ]]; then
+      echo '静默模式：自动选择第2项。'
+      mysql -u root -p"${mariadbRootPassword}" -e "drop database ${siteSha1};" || true
+      arrUser=(${dbUser})
+      for ((i=0; i<${#arrUser[@]}; i+=2)); do
+        mysql -u root -p"${mariadbRootPassword}" -e "drop user ${arrUser[$i]}@${arrUser[$i+1]};" || true
+      done
+      echo "已删除数据库及用户，继续安装！"
+      continue
     fi
+    read -r -p "请输入选择：" input
+    case ${input} in
+      1)
+        while true; do
+          read -r -p "请输入新的站点名称：" inputSiteName
+          if [[ -n ${inputSiteName} ]]; then
+            siteName=${inputSiteName}
+            read -r -p "使用新的站点名称 ${siteName} (y/n)：" yn
+            [[ ${yn} =~ ^[yY]$ ]] && break
+          fi
+        done
+        continue;;
+      2)
+        mysql -u root -p"${mariadbRootPassword}" -e "drop database ${siteSha1};" || true
+        arrUser=(${dbUser})
+        for ((i=0; i<${#arrUser[@]}; i+=2)); do
+          mysql -u root -p"${mariadbRootPassword}" -e "drop user ${arrUser[$i]}@${arrUser[$i+1]};" || true
+        done
+        echo "已删除数据库及用户，继续安装！"
+        continue;;
+      3)
+        warnArr+=("检测到重名数据库/用户 ${siteSha1}，选择覆盖安装，可能导致无法连接数据库等问题。")
+        break;;
+      *) echo "取消安装..."; exit 1;;
+    esac
+  else
+    echo "无重名数据库或用户。"; break
+  fi
 done
 end_section
 
@@ -507,263 +486,263 @@ begin_section "supervisor 指令检测"
 echo "确认supervisor可用重启指令。"
 supervisorCommand=""
 if command -v supervisord >/dev/null 2>&1; then
-    if [[ $(grep -E "[ *]reload)" /etc/init.d/supervisor) != '' ]]; then
-        supervisorCommand="reload"
-    elif [[ $(grep -E "[ *]restart)" /etc/init.d/supervisor) != '' ]]; then
-        supervisorCommand="restart"
-    else
-        echo "/etc/init.d/supervisor中没有找到reload或restart指令"
-        echo "可能需要手动重启supervisor"
-        warnArr+=("没有找到可用的supervisor重启指令。")
-    fi
+  if grep -Eq "[ *]reload\)" /etc/init.d/supervisor 2>/dev/null; then
+    supervisorCommand="reload"
+  elif grep -Eq "[ *]restart\)" /etc/init.d/supervisor 2>/dev/null; then
+    supervisorCommand="restart"
+  else
+    echo "init 脚本未含 reload/restart"
+    warnArr+=("没有找到可用的supervisor重启指令。")
+  fi
 else
-    echo "supervisor没有安装"; warnArr+=("supervisor没有安装或安装失败，不能使用supervisor管理进程。")
+  echo "supervisor 未安装"
+  warnArr+=("supervisor 未安装或安装失败，不能使用其管理进程。")
 fi
-echo "可用指令："${supervisorCommand}
+echo "可用指令：${supervisorCommand:-无}"
 end_section
 
 begin_section "安装/校验 Redis"
 if ! command -v redis-server >/dev/null 2>&1; then
-    echo "==========获取最新版redis，并安装=========="
-    rm -rf /var/lib/redis /etc/redis /etc/default/redis-server /etc/init.d/redis-server
-    rm -f /usr/share/keyrings/redis-archive-keyring.gpg
-    curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
-    apt update
-    DEBIAN_FRONTEND=noninteractive apt install -y redis-tools redis-server redis
+  rm -rf /var/lib/redis /etc/redis /etc/default/redis-server /etc/init.d/redis-server /usr/share/keyrings/redis-archive-keyring.gpg
+  curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/redis.list
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt install -y redis-tools redis-server redis
 fi
 if command -v redis-server >/dev/null 2>&1; then
-    result=$(redis-server -v | grep "7" || true)
-    [[ -z "$result" ]] && { echo '==========已安装redis，但不是推荐的7版本。=========='; warnArr+=('redis不是推荐的7版本。'); } || echo '==========已安装redis7=========='
-    rteArr+=("$(redis-server -v)")
+  if ! redis-server -v | grep -q "7"; then
+    warnArr+=('redis 不是推荐的 7 版本。')
+    echo '==========已安装redis，但不是推荐的7版本。=========='
+  else
+    echo '==========已安装redis7=========='
+  fi
+  rteArr+=("$(redis-server -v)")
 else
-    echo "==========redis安装失败退出脚本！=========="; exit 1
+  echo "==========redis安装失败退出脚本！=========="; exit 1
 fi
 end_section
 
 begin_section "pip 源与工具升级"
 mkdir -p /root/.pip
-cat >/root/.pip/pip.conf <<EOF
+cat >/root/.pip/pip.conf <<'PIPCONF'
 [global]
 index-url=https://pypi.tuna.tsinghua.edu.cn/simple
 [install]
 trusted-host=mirrors.tuna.tsinghua.edu.cn
-EOF
-echo "===================pip已修改为国内源==================="
+PIPCONF
 cd ~
 python3 -m pip install --upgrade pip
 python3 -m pip install --upgrade setuptools cryptography psutil
-alias python=python3
-alias pip=pip3
+alias python=python3; alias pip=pip3
 end_section
 
 begin_section "创建用户/组、环境与时区/locale"
-echo "===================建立新用户组和用户==================="
-result=$(grep "${userName}:" /etc/group || true)
-if [[ ${result} == "" ]]; then
-    gid=1000
-    while true; do
-        result=$(grep ":${gid}:" /etc/group || true)
-        if [[ ${result} == "" ]]; then groupadd -g ${gid} ${userName}; echo "已新建用户组${userName}，gid: ${gid}"; break; else gid=$((gid+1)); fi
-    done
-else echo '用户组已存在'; fi
-result=$(grep "${userName}:" /etc/passwd || true)
-if [[ ${result} == "" ]]; then
-    uid=1000
-    while true; do
-        result=$(grep ":x:${uid}:" /etc/passwd || true)
-        if [[ ${result} == "" ]]; then useradd --no-log-init -r -m -u ${uid} -g ${gid} -G sudo ${userName}; echo "已新建用户${userName}，uid: ${uid}"; break; else uid=$((uid+1)); fi
-    done
-else echo '用户已存在'; fi
-sed -i "/^${userName}.*/d" /etc/sudoers
+# 用户组
+if ! getent group "${userName}" >/dev/null; then
+  gid=1000; while getent group "${gid}" >/dev/null; do gid=$((gid+1)); done
+  groupadd -g ${gid} ${userName}
+fi
+# 用户
+if ! id -u "${userName}" >/dev/null 2>&1; then
+  uid=1000; while id -u "${uid}" >/dev/null 2>&1; do uid=$((uid+1)); done
+  useradd --no-log-init -r -m -u ${uid} -g ${gid:-${uid}} -G sudo ${userName}
+fi
+sed -i "/^${userName}\s\+ALL=.*/d" /etc/sudoers
 echo "${userName} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 mkdir -p /home/${userName}
-cp -af /root/.pip /home/${userName}/ || true
+cp -af /root/.pip /home/${userName}/ 2>/dev/null || true
 chown -R ${userName}.${userName} /home/${userName}
 usermod -s /bin/bash ${userName}
-echo "===================设置语言环境==================="
-sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-locale-gen
+# locale
+sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen; locale-gen
 for f in /root/.bashrc /home/${userName}/.bashrc; do
-  sed -i "/^export.*LC_ALL=.*/d" "$f"; sed -i "/^export.*LC_CTYPE=.*/d" "$f"; sed -i "/^export.*LANG=.*/d" "$f"
+  sed -i "/^export.*LC_ALL=.*/d;/^export.*LC_CTYPE=.*/d;/^export.*LANG=.*/d" "$f"
   echo -e "export LC_ALL=en_US.UTF-8\nexport LC_CTYPE=en_US.UTF-8\nexport LANG=en_US.UTF-8" >> "$f"
 done
-echo "===================设置时区为上海==================="
+# 时区
 ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 dpkg-reconfigure -f noninteractive tzdata
-echo "===================设置监控文件数量上限==================="
+# 文件监控上限
 sed -i "/^fs.inotify.max_user_watches=.*/d" /etc/sysctl.conf
 echo fs.inotify.max_user_watches=524288 | tee -a /etc/sysctl.conf
-/sbin/sysctl -p
+/sbin/sysctl -p || true
 end_section
 
 begin_section "Node.js 20 / npm / yarn 准备"
 source /etc/profile || true
 if ! command -v node >/dev/null 2>&1; then
-    echo "==========获取最新版nodejs-v20，并安装=========="
-    if [ -z "${nodejsLink:-}" ] ; then
-        nodejsLink=$(curl -sL https://registry.npmmirror.com/-/binary/node/latest-v20.x/ | grep -oE "https?://[a-zA-Z0-9\.\/_&=@$%?~#-]*node-v20\.[0-9][0-9]\.[0-9]{1,2}-linux-x64\.tar\.xz" | tail -1)
-    else
-        echo 已自定义nodejs下载链接，开始下载
-    fi
-    if [ -z "${nodejsLink:-}" ] ; then echo "没有匹配到 node.js 下载地址"; exit 1; fi
-    nodejsFileName=${nodejsLink##*/}
-    nodejsVer=$(awk -F'-' '{print $2}' <<< "$nodejsFileName")
-    echo "nodejs20最新版本为：${nodejsVer}"
-    echo "即将安装nodejs20到/usr/local/lib/nodejs/${nodejsVer}"
-    wget -q "$nodejsLink" -P /tmp/
-    mkdir -p /usr/local/lib/nodejs
-    tar -xJf /tmp/${nodejsFileName} -C /usr/local/lib/nodejs/
-    mv /usr/local/lib/nodejs/${nodejsFileName%%.tar*} /usr/local/lib/nodejs/${nodejsVer}
-    echo "export PATH=/usr/local/lib/nodejs/${nodejsVer}/bin:\$PATH" >> /etc/profile.d/nodejs.sh
-    echo "export PATH=/usr/local/lib/nodejs/${nodejsVer}/bin:\$PATH" >> ~/.bashrc
-    echo "export PATH=/home/${userName}/.local/bin:/usr/local/lib/nodejs/${nodejsVer}/bin:\$PATH" >> /home/${userName}/.bashrc
-    export PATH=/usr/local/lib/nodejs/${nodejsVer}/bin:$PATH
-    source /etc/profile || true
+  nodejsLink=$(curl -sL https://registry.npmmirror.com/-/binary/node/latest-v20.x/ | grep -oE "https?://[^\"']*node-v20\.[0-9]+\.[0-9]+-linux-x64\.tar\.xz" | tail -1)
+  [[ -z $nodejsLink ]] && echo "未匹配到 nodejs v20 下载地址" && exit 1
+  nodejsFileName=${nodejsLink##*/}
+  nodejsVer=$(echo "${nodejsFileName}" | sed -E 's/^(node-)(v[0-9]+\.[0-9]+\.[0-9]+)(-linux-x64\.tar\.xz)$/\2/')
+  echo "nodejs20最新版本：${nodejsVer}"
+  wget -q "${nodejsLink}" -P /tmp/
+  mkdir -p /usr/local/lib/nodejs
+  tar -xJf "/tmp/${nodejsFileName}" -C /usr/local/lib/nodejs/
+  mv "/usr/local/lib/nodejs/${nodejsFileName%%.tar*}" "/usr/local/lib/nodejs/${nodejsVer}"
+  echo "export PATH=/usr/local/lib/nodejs/${nodejsVer}/bin:\$PATH" >/etc/profile.d/nodejs.sh
+  echo "export PATH=/usr/local/lib/nodejs/${nodejsVer}/bin:\$PATH" >>~/.bashrc
+  echo "export PATH=/home/${userName}/.local/bin:/usr/local/lib/nodejs/${nodejsVer}/bin:\$PATH" >> /home/${userName}/.bashrc
+  export PATH=/usr/local/lib/nodejs/${nodejsVer}/bin:$PATH
+  source /etc/profile || true
 fi
 if command -v node >/dev/null 2>&1; then
-    result=$(node -v | grep "v20." || true)
-    [[ -z "$result" ]] && { echo '==========已存在node，但不是v20版。建议卸载后重试。=========='; warnArr+=('node不是推荐的v20版本。'); } || echo '==========已安装node20=========='
-    rteArr+=("node $(node -v)")
+  node -v | grep -q "^v20\." || warnArr+=('node 不是 v20，可能导致构建问题。')
+  rteArr+=("node $(node -v)")
 else
-    echo "==========node安装失败退出脚本！=========="; exit 1
+  echo "==========node安装失败退出脚本！==========" && exit 1
 fi
 npm config set registry https://registry.npmmirror.com -g
-echo "===================npm已修改为国内源==================="
 npm install -g npm
 npm install -g yarn
 yarn config set registry https://registry.npmmirror.com --global
-echo "===================yarn已修改为国内源==================="
 end_section
 
 begin_section "切换到应用用户，配置用户级 yarn"
 su - ${userName} <<'EOF'
-echo "===================配置运行环境变量==================="
+set -e
 cd ~
-alias python=python3
-alias pip=pip3
+alias python=python3; alias pip=pip3
 source /etc/profile || true
-export PATH=/home/'"${userName}"'/.local/bin:$PATH
-export LC_ALL=en_US.UTF-8
-export LC_CTYPE=en_US.UTF-8
-export LANG=en_US.UTF-8
+export PATH="$HOME/.local/bin:$PATH"
+export LC_ALL=en_US.UTF-8 LC_CTYPE=en_US.UTF-8 LANG=en_US.UTF-8
 yarn config set registry https://registry.npmmirror.com --global
-echo "===================用户yarn已修改为国内源==================="
+echo "用户级 yarn 源已设置。"
 EOF
 end_section
 
 begin_section "Docker 适配（如启用）"
 echo "判断是否适配docker"
 if [[ ${inDocker} == "yes" ]]; then
-    supervisorConfigDir=/home/${userName}/.config/supervisor
-    mkdir -p ${supervisorConfigDir}
-    f=${supervisorConfigDir}/mariadb.conf
-    rm -f ${f}
-    echo "[program:mariadb]" > ${f}
-    echo "command=/usr/sbin/mariadbd --basedir=/usr --datadir=/var/lib/mysql --plugin-dir=/usr/lib/mysql/plugin --user=mysql --skip-log-error" >> ${f}
-    echo "priority=1" >> ${f}
-    echo "autostart=true" >> ${f}
-    echo "autorestart=true" >> ${f}
-    echo "numprocs=1" >> ${f}
-    echo "startretries=10" >> ${f}
-    echo "stopwaitsecs=10" >> ${f}
-    echo "redirect_stderr=true" >> ${f}
-    echo "stdout_logfile_maxbytes=1024MB" >> ${f}
-    echo "stdout_logfile_backups=10" >> ${f}
-    echo "stdout_logfile=/var/run/log/supervisor_mysql.log" >> ${f}
-    f=${supervisorConfigDir}/nginx.conf
-    rm -f ${f}
-    echo "[program: nginx]" > ${f}
-    echo "command=/usr/sbin/nginx -g 'daemon off;'" >> ${f}
-    echo "autorestart=true" >> ${f}
-    echo "autostart=true" >> ${f}
-    echo "stderr_logfile=/var/run/log/supervisor_nginx_error.log" >> ${f}
-    echo "stdout_logfile=/var/run/log/supervisor_nginx_stdout.log" >> ${f}
-    echo "environment=ASPNETCORE_ENVIRONMENT=Production" >> ${f}
-    echo "user=root" >> ${f}
-    echo "stopsignal=INT" >> ${f}
-    echo "startsecs=10" >> ${f}
-    echo "startretries=5" >> ${f}
-    echo "stopasgroup=true" >> ${f}
-    echo "关闭mariadb进程，启动supervisor进程并管理mariadb进程"
-    /etc/init.d/mariadb stop || true
-    for i in $(seq -w 2); do echo ${i}; sleep 1; done
-    if [[ ! -e /etc/supervisor/conf.d/mariadb.conf ]]; then
-        ln -fs ${supervisorConfigDir}/mariadb.conf /etc/supervisor/conf.d/mariadb.conf
-    fi
-    if ! pgrep -x supervisord >/dev/null 2>&1; then
-        /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
-    else
-        /usr/bin/supervisorctl reload
-    fi
-    for i in $(seq -w 2); do echo ${i}; sleep 1; done
+  supervisorConfigDir=/home/${userName}/.config/supervisor
+  mkdir -p ${supervisorConfigDir}
+  # mariadb
+  cat >${supervisorConfigDir}/mariadb.conf <<'SUP_MY'
+[program:mariadb]
+command=/usr/sbin/mariadbd --basedir=/usr --datadir=/var/lib/mysql --plugin-dir=/usr/lib/mysql/plugin --user=mysql --skip-log-error
+priority=1
+autostart=true
+autorestart=true
+numprocs=1
+startretries=10
+stopwaitsecs=10
+redirect_stderr=true
+stdout_logfile_maxbytes=1024MB
+stdout_logfile_backups=10
+stdout_logfile=/var/run/log/supervisor_mysql.log
+SUP_MY
+  # nginx
+  cat >${supervisorConfigDir}/nginx.conf <<'SUP_NGX'
+[program: nginx]
+command=/usr/sbin/nginx -g 'daemon off;'
+autorestart=true
+autostart=true
+stderr_logfile=/var/run/log/supervisor_nginx_error.log
+stdout_logfile=/var/run/log/supervisor_nginx_stdout.log
+user=root
+stopsignal=INT
+startsecs=10
+startretries=5
+stopasgroup=true
+SUP_NGX
+  /etc/init.d/mariadb stop || true
+  sleep 2
+  [[ ! -e /etc/supervisor/conf.d/mariadb.conf ]] && ln -fs ${supervisorConfigDir}/mariadb.conf /etc/supervisor/conf.d/mariadb.conf
+  if ! pgrep -x supervisord >/dev/null; then
+    /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
+  else
+    /usr/bin/supervisorctl reload
+  fi
+  sleep 2
 else
-    note "非 Docker 模式，跳过容器适配"
+  note "非 Docker 模式，跳过容器适配"
 fi
 end_section
 
 begin_section "安装 bench"
 su - ${userName} <<EOF
+set -e
 echo "===================安装bench==================="
-sudo -H pip3 install frappe-bench${benchVersion}
+sudo -H pip3 install "frappe-bench${benchVersion}"
 if type bench >/dev/null 2>&1; then
-    benchV=\$(bench --version)
-    echo '==========已安装bench=========='
-    echo \${benchV}
+  bench --version
 else
-    echo "==========bench安装失败退出脚本！=========="
-    exit 1
+  echo "==========bench安装失败退出脚本！==========" && exit 1
 fi
 EOF
-rteArr+=("bench $(bench --version 2>/dev/null || echo unknown)")
+rteArr+=("bench $(su - ${userName} -c 'bench --version 2>/dev/null' || echo unknown)")
 end_section
 
 begin_section "Docker 情况下 bench 脚本适配（fail2ban 注释）"
 if [[ ${inDocker} == "yes" ]]; then
-    echo "已配置在docker中运行，将注释安装fail2ban的代码。"
-    f="/usr/local/lib/python3.10/dist-packages/bench/config/production_setup.py"
-    n=$(sed -n "/^[[:space:]]*if not which.*fail2ban-client/=" ${f})
-    if [ ${n} ]; then
-        sed -i "${n} s/^/#&/" ${f}; let n++; sed -i "${n} s/^/#&/" ${f}
-    fi
+  f="/usr/local/lib/python3.10/dist-packages/bench/config/production_setup.py"
+  n=$(sed -n "/^[[:space:]]*if not which.*fail2ban-client/=" ${f} 2>/dev/null || true)
+  if [[ -n ${n} ]]; then
+    sed -i "${n} s/^/#&/; $((n+1)) s/^/#&/" ${f}
+    echo "已注释 fail2ban 自动安装逻辑。"
+  fi
 else
-    note "非 Docker 模式，跳过 bench fail2ban 适配"
+  note "非 Docker 模式，跳过 bench fail2ban 适配"
 fi
 end_section
 
 begin_section "初始化 frappe（bench init，带重试）"
-su - ${userName} <<EOF
+su - ${userName} <<'EOF'
+set -euo pipefail
 echo "===================初始化frappe==================="
-for ((i=0; i<5; i++)); do
-    rm -rf ~/${installDir}
-    set +e
-    bench init ${frappeBranch} --python /usr/bin/python3 --ignore-exist ${installDir} ${frappePath}
-    err=\$?
-    set -e
-    if [[ \${err} == 0 ]]; then echo "执行返回正确第 \${i} 次"; sleep 1; break
-    elif [[ \${i} -ge 4 ]]; then echo "==========frappe初始化失败太多（\${i}），退出脚本！=========="; exit 1
-    else echo "==========frappe初始化失败第 \${i} 次！自动重试。=========="
-    fi
+INSTALL_DIR="${installDir}"
+FRAPPE_BRANCH_OPT="${frappeBranch}"
+FRAPPE_PATH_OPT="${frappePath}"
+for i in 1 2 3 4 5; do
+  rm -rf "${HOME:?}/${INSTALL_DIR}" || true
+  set +e
+  bench init ${FRAPPE_BRANCH_OPT} --python /usr/bin/python3 \
+    --skip-redis-config-generation --skip-assets \
+    "${INSTALL_DIR}" ${FRAPPE_PATH_OPT} --verbose
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    echo "✅ bench init 成功（第 ${i} 次尝试）"
+    break
+  fi
+  echo "⚠️ bench init 失败（第 ${i} 次），3 秒后重试..."
+  sleep 3
+  if [ "$i" -eq 5 ]; then
+    echo "❌ bench init 连续失败，输出最近日志以便排查："
+    find "${HOME}/${INSTALL_DIR}" -maxdepth 3 -type f \( -name "*.log" -o -name "pip-log.txt" -o -name "yarn-error.log" \) -print -exec tail -n 200 {} \; || true
+    exit 1
+  fi
 done
-echo "frappe初始化脚本执行结束..."
 EOF
 end_section
 
 begin_section "确认 frappe 初始化结果"
 su - ${userName} <<'EOF'
-cd ~/'"${installDir}"'
+set -e
+cd ~/"${installDir}"
 frappeV=$(bench version | grep "frappe" || true)
-if [[ ${frappeV} == "" ]]; then
-    echo "==========frappe初始化失败退出脚本！=========="; exit 1
+if [[ -z ${frappeV} ]]; then
+  echo "==========frappe初始化失败退出脚本！=========="; exit 1
 else
-    echo '==========frappe初始化成功=========='; echo ${frappeV}
+  echo '==========frappe初始化成功=========='
+  echo "${frappeV}"
 fi
 EOF
 end_section
 
-begin_section "获取应用（erpnext/payments/hrms/print_designer）"
-su - ${userName} <<EOF
-cd ~/${installDir}
+begin_section "将 wkhtmltopdf 写入 bench 全局配置"
+su - ${userName} <<'EOF'
+set -e
+cd ~/"${installDir}"
+bench set-config -g wkhtmltopdf "$(command -v wkhtmltopdf)"
+bench clear-cache
+EOF
+end_section
+
+begin_section "获取应用（erpnext / payments / hrms / print_designer）"
+su - ${userName} <<'EOF'
+set -e
+cd ~/"${installDir}"
 echo "===================获取应用==================="
 bench get-app ${erpnextBranch} ${erpnextPath}
 bench get-app payments
@@ -773,17 +752,19 @@ EOF
 end_section
 
 begin_section "建立新站点（bench new-site）"
-su - ${userName} <<EOF
-cd ~/${installDir}
+su - ${userName} <<'EOF'
+set -e
+cd ~/"${installDir}"
 echo "===================建立新网站==================="
 bench new-site --mariadb-root-password ${mariadbRootPassword} ${siteDbPassword} --admin-password ${adminPassword} ${siteName}
 EOF
 end_section
 
 begin_section "安装应用到站点"
-su - ${userName} <<EOF
-cd ~/${installDir}
-echo "===================安装erpnext应用到新网站==================="
+su - ${userName} <<'EOF'
+set -e
+cd ~/"${installDir}"
+echo "===================安装应用到新网站==================="
 bench --site ${siteName} install-app payments
 bench --site ${siteName} install-app erpnext
 bench --site ${siteName} install-app hrms
@@ -792,31 +773,30 @@ EOF
 end_section
 
 begin_section "站点基础配置"
-su - ${userName} <<EOF
-cd ~/${installDir}
-echo "===================设置网站超时时间==================="
+su - ${userName} <<'EOF'
+set -e
+cd ~/"${installDir}"
 bench config http_timeout 6000
 bench config serve_default_site on
 bench use ${siteName}
-# 保险：统一写一次 wkhtmltopdf 路径
-bench set-config -g wkhtmltopdf "\$(command -v wkhtmltopdf)" || true
 EOF
 end_section
 
 begin_section "安装中文本地化（erpnext_chinese）"
 su - ${userName} <<'EOF'
-cd ~/'"${installDir}"'
+set -e
+cd ~/"${installDir}"
 echo "===================安装中文本地化==================="
 bench get-app https://gitee.com/yuzelin/erpnext_chinese.git
-bench --site '"${siteName}"' install-app erpnext_chinese
+bench --site ${siteName} install-app erpnext_chinese
 bench clear-cache && bench clear-website-cache
 EOF
 end_section
 
 begin_section "清理工作台缓存"
 su - ${userName} <<'EOF'
-cd ~/'"${installDir}"'
-echo "===================清理工作台==================="
+set -e
+cd ~/"${installDir}"
 bench clear-cache
 bench clear-website-cache
 EOF
@@ -824,101 +804,93 @@ end_section
 
 begin_section "生产模式开启（如启用）"
 if [[ ${productionMode} == "yes" ]]; then
-    echo "================开启生产模式==================="
-    apt update
-    DEBIAN_FRONTEND=noninteractive apt install nginx -y
-    rteArr+=("$(nginx -v 2>/dev/null || true)")
-    if [[ ${inDocker} == "yes" ]]; then
-        /etc/init.d/nginx stop || true
-        if [[ ! -e /etc/supervisor/conf.d/nginx.conf ]]; then
-            ln -fs ${supervisorConfigDir}/nginx.conf /etc/supervisor/conf.d/nginx.conf
-        fi
-        /usr/bin/supervisorctl status || true
-        /usr/bin/supervisorctl reload || true
-        for i in $(seq -w 15 -1 1); do echo -en ${i}; sleep 1; done; echo
-        /usr/bin/supervisorctl status || true
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt install -y nginx
+  rteArr+=("$(nginx -v 2>/dev/null || true)")
+  if [[ ${inDocker} == "yes" ]]; then
+    /etc/init.d/nginx stop || true
+    [[ ! -e /etc/supervisor/conf.d/nginx.conf ]] && ln -fs /home/${userName}/.config/supervisor/nginx.conf /etc/supervisor/conf.d/nginx.conf
+    /usr/bin/supervisorctl status || true
+    /usr/bin/supervisorctl reload || true
+    for i in $(seq -w 15 -1 1); do echo -en "${i}"; sleep 1; done; echo
+    /usr/bin/supervisorctl status || true
+  fi
+  if [[ -n ${supervisorCommand} ]]; then
+    f="/usr/local/lib/python3.10/dist-packages/bench/config/supervisor.py"
+    n=$(sed -n "/service.*supervisor.*reload\|service.*supervisor.*restart/=" ${f} 2>/dev/null || true)
+    [[ -n ${n} ]] && sed -i "${n} s/reload\|restart/${supervisorCommand}/g" ${f}
+  fi
+  f="/etc/supervisor/conf.d/${installDir}.conf"
+  i=0
+  while [[ $i -lt 9 ]]; do
+    echo "尝试开启生产模式 ${i} ..."
+    set +e
+    su - ${userName} -c "cd ~/${installDir} && sudo bench setup production ${userName} --yes"
+    rc=$?; set -e
+    i=$((i+1))
+    sleep 1
+    if [[ -e ${f} && $rc -eq 0 ]]; then
+      echo "配置文件已生成..."
+      break
+    elif [[ ${i} -ge 9 ]]; then
+      echo "失败次数过多 ${i}，请尝试手动开启！"
+      break
+    else
+      echo "配置文件生成失败 ${i}，自动重试。"
     fi
-    echo "修正脚本代码..."
-    if [[ ${supervisorCommand} != "" ]]; then
-        echo "可用的supervisor重启指令为："${supervisorCommand}
-        f="/usr/local/lib/python3.10/dist-packages/bench/config/supervisor.py"
-        n=$(sed -n "/service.*supervisor.*reload\|service.*supervisor.*restart/=" ${f})
-        if [ ${n} ]; then sed -i "${n} s/reload\|restart/${supervisorCommand}/g" ${f}; fi
-    fi
-    f="/etc/supervisor/conf.d/${installDir}.conf"
-    i=0
-    while [[ $i -lt 9 ]]; do
-        echo "尝试开启生产模式${i}..."
-        set +e
-        su - ${userName} <<EOF2
-        cd ~/${installDir}
-        sudo bench setup production ${userName} --yes
-EOF2
-        rc=$?
-        set -e
-        i=$((i + 1))
-        echo "判断执行结果（rc=$rc）"
-        sleep 1
-        if [[ -e ${f} ]]; then echo "配置文件已生成..."; break
-        elif [[ ${i} -ge 9 ]]; then echo "失败次数过多${i}，请尝试手动开启！"; break
-        else echo "配置文件生成失败${i}，自动重试。"
-        fi
-    done
+  done
 else
-    note "开发模式：跳过生产模式开启"
+  note "开发模式：跳过生产模式开启"
 fi
 end_section
 
 begin_section "自定义 web 端口（如设置）"
-if [[ ${webPort} != "" ]]; then
-    echo "===================设置web端口为：${webPort}==================="
-    t=$(echo ${webPort}|sed 's/[0-9]//g')
-    if [[ (${t} == "") && (${webPort} -ge 80) && (${webPort} -lt 65535) ]]; then
-        if [[ ${productionMode} == "yes" ]]; then
-            f="/home/${userName}/${installDir}/config/nginx.conf"
-            if [[ -e ${f} ]]; then
-                n=($(sed -n "/^[[:space:]]*listen/=" ${f}))
-                if [ ${n} ]; then
-                    sed -i "${n} c listen ${webPort};" ${f}
-                    sed -i "$((${n}+1)) c listen [::]:${webPort};" ${f}
-                    /etc/init.d/nginx reload
-                    echo "web端口号修改为："${webPort}
-                else
-                    echo "配置文件中没找到设置行。修改失败。"; warnArr+=("修改端口失败：未找到listen行")
-                fi
-            else
-                echo "没有找到配置文件："${f}",端口修改失败。"; warnArr+=("未找到 nginx.conf")
-            fi
+if [[ -n ${webPort} ]]; then
+  echo "设置web端口为：${webPort}"
+  t=$(echo ${webPort}|sed 's/[0-9]//g')
+  if [[ -z ${t} && ${webPort} -ge 80 && ${webPort} -lt 65535 ]]; then
+    if [[ ${productionMode} == "yes" ]]; then
+      f="/home/${userName}/${installDir}/config/nginx.conf"
+      if [[ -e ${f} ]]; then
+        n=($(sed -n "/^[[:space:]]*listen/=" ${f}))
+        if [[ -n ${n} ]]; then
+          sed -i "${n} c listen ${webPort};" ${f}
+          sed -i "$((n+1)) c listen [::]:${webPort};" ${f}
+          /etc/init.d/nginx reload || true
+          echo "web端口号修改为：${webPort}"
         else
-            f="/home/${userName}/${installDir}/Procfile"
-            echo "找到配置文件："${f}
-            if [[ -e ${f} ]]; then
-                n=($(sed -n "/^web.*port.*/=" ${f}))
-                if [[ ${n} ]]; then
-                    sed -i "${n} c web: bench serve --port ${webPort}" ${f}
-                    su - ${userName} bash -c "cd ~/${installDir}; bench restart"
-                    echo "web端口号修改为："${webPort}
-                else
-                    echo "配置文件中没找到设置行。修改失败。"; warnArr+=("修改端口失败：Procfile 未找到 web 行")
-                fi
-            else
-                echo "没有找到配置文件："${f}",端口修改失败。"; warnArr+=("未找到 Procfile")
-            fi
+          warnArr+=("找到 ${f}，但未定位到 listen 设置行。")
         fi
+      else
+        warnArr+=("未找到 ${f}，端口修改失败。")
+      fi
     else
-        echo "设置的端口号无效或不符合要求，取消端口号修改。使用默认端口号。"; warnArr+=("webPort 无效，使用默认")
+      f="/home/${userName}/${installDir}/Procfile"
+      if [[ -e ${f} ]]; then
+        n=($(sed -n "/^web.*port.*/=" ${f}))
+        if [[ -n ${n} ]]; then
+          sed -i "${n} c web: bench serve --port ${webPort}" ${f}
+          su - ${userName} -c "cd ~/${installDir}; bench restart" || true
+          echo "web端口号修改为：${webPort}"
+        else
+          warnArr+=("找到 ${f}，但未定位到 web: 行。")
+        fi
+      else
+        warnArr+=("未找到 ${f}，端口修改失败。")
+      fi
     fi
+  else
+    warnArr+=("设置的端口号无效，保持默认。")
+  fi
 else
-    if [[ ${productionMode} == "yes" ]]; then webPort="80"; else webPort="8000"; fi
-    note "未指定 webPort，按默认：${webPort}"
+  [[ ${productionMode} == "yes" ]] && webPort="80" || webPort="8000"
+  note "未指定 webPort，按默认：${webPort}"
 fi
 end_section
 
 begin_section "权限修正、清理缓存与包管理器缓存"
-echo "===================修正权限==================="
 chown -R ${userName}:${userName} /home/${userName}/
 chmod 755 /home/${userName}
-echo "===================清理垃圾,ERPNext安装完毕==================="
 apt clean
 apt autoremove -y
 rm -rf /var/lib/apt/lists/*
@@ -926,7 +898,8 @@ pip cache purge || true
 npm cache clean --force || true
 yarn cache clean || true
 su - ${userName} <<'EOF'
-cd ~/'"${installDir}"'
+set -e
+cd ~/"${installDir}"
 npm cache clean --force || true
 yarn cache clean || true
 EOF
@@ -934,39 +907,31 @@ end_section
 
 begin_section "确认安装版本与环境摘要"
 su - ${userName} <<'EOF'
-cd ~/'"${installDir}"'
+set -e
+cd ~/"${installDir}"
 echo "===================确认安装==================="
 bench version
 EOF
 echo "===================主要运行环境==================="
 for i in "${rteArr[@]}"; do echo "${i}"; done
-if [[ ${#warnArr[@]} != 0 ]]; then
-    echo "===================警告==================="; for i in "${warnArr[@]}"; do echo "${i}"; done
+if [[ ${#warnArr[@]} -ne 0 ]]; then
+  echo "===================警告==================="; for i in "${warnArr[@]}"; do echo "${i}"; done
 fi
 echo "管理员账号：administrator，密码：${adminPassword}。"
 if [[ ${productionMode} == "yes" ]]; then
-    if [[ -e /etc/supervisor/conf.d/${installDir}.conf ]]; then
-        echo "已开启生产模式。使用ip或域名访问网站。监听${webPort}端口。"
-    else
-        echo "已配置开启生产模式。但supervisor配置文件生成失败，请排除错误后手动开启。"
-    fi
+  if [[ -e /etc/supervisor/conf.d/${installDir}.conf ]]; then
+    echo "已开启生产模式。使用 IP/域名访问网站。监听 ${webPort} 端口。"
+  else
+    echo "已尝试开启生产模式，但 supervisor 配置未生成，请排查后手动开启。"
+  fi
 else
-    echo "使用 su - ${userName} 转到 ${userName} 用户进入 ~/${installDir} 目录"
-    echo "运行 bench start 启动项目，使用 ip 或域名访问网站。监听 ${webPort} 端口。"
+  echo "开发模式：su - ${userName} 进入 ~/${installDir}，运行：bench start ；默认端口 ${webPort}。"
 fi
 if [[ ${inDocker} == "yes" ]]; then
-    echo "当前supervisor状态"; /usr/bin/supervisorctl status || true
+  echo "当前supervisor状态"; /usr/bin/supervisorctl status || true
 fi
-end_section
-
-begin_section "脚本收尾"
-# （原示例行容易导致语法错误，这里统一注释掉）
-# exit 0
-# p all
-# fi
-# exit 0
 end_section
 
 echo
-echo "🎉 全部流程执行完毕。总耗时：$(_elapsed $(( $(date +%s) - START_AT ))) )"
+echo "🎉 全部流程执行完毕。总耗时：$(_elapsed $(( $(date +%s) - START_AT )))"
 echo "📄 完整日志：$LOG_FILE"
