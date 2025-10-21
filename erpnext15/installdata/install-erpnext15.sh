@@ -318,6 +318,7 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
     pkg-config \
     build-essential \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev
+    unzip
 # 环境需求检查
 rteArr=()
 warnArr=()
@@ -728,6 +729,98 @@ npm install -g yarn
 # yarn config list
 yarn config set registry https://registry.npmmirror.com --global
 echo "===================yarn已修改为国内源==================="
+# 安装思源开源字体（宋体/黑体）并配置中文字体优先级（供 wkhtmltopdf 使用）
+echo "===================安装思源开源字体（宋体/黑体）==================="
+
+# 先尝试用 APT 安装（部分 Ubuntu 22.04 源可直接提供）
+set +e
+DEBIAN_FRONTEND=noninteractive apt install -y fonts-source-han-sans-otf fonts-source-han-serif-otf
+apt_rc=$?
+set -e
+
+if [ $apt_rc -ne 0 ]; then
+  echo "APT 源未提供思源字体，改用 GitHub 手动安装（精简：仅 SC 简体中文 Regular/Bold）..."
+  mkdir -p /usr/share/fonts/opentype/source-han-sans /usr/share/fonts/opentype/source-han-serif
+
+  # 思源黑体（Source Han Sans SC）
+  pushd /usr/share/fonts/opentype/source-han-sans >/dev/null
+  set +e
+  for url in \
+    "https://github.com/adobe-fonts/source-han-sans/releases/latest/download/SourceHanSansSC.zip" \
+    "https://ghproxy.com/https://github.com/adobe-fonts/source-han-sans/releases/latest/download/SourceHanSansSC.zip"
+  do
+    echo "尝试下载：$url"
+    curl -L --retry 3 -o SourceHanSansSC.zip "$url" && break
+  done
+  set -e
+  if [ -f SourceHanSansSC.zip ]; then
+    unzip -o SourceHanSansSC.zip '*/OTF/*.otf' -d .
+    # 精简体积：保留 Regular / Bold
+    find . -type f -name '*.otf' ! -regex '.*\(Regular\|Bold\)\.otf$' -delete || true
+  else
+    echo "思源黑体下载失败（SC），跳过该系列的手动安装。"
+  fi
+  popd >/dev/null
+
+  # 思源宋体（Source Han Serif SC）
+  pushd /usr/share/fonts/opentype/source-han-serif >/dev/null
+  set +e
+  for url in \
+    "https://github.com/adobe-fonts/source-han-serif/releases/latest/download/SourceHanSerifSC.zip" \
+    "https://ghproxy.com/https://github.com/adobe-fonts/source-han-serif/releases/latest/download/SourceHanSerifSC.zip"
+  do
+    echo "尝试下载：$url"
+    curl -L --retry 3 -o SourceHanSerifSC.zip "$url" && break
+  done
+  set -e
+  if [ -f SourceHanSerifSC.zip ]; then
+    unzip -o SourceHanSerifSC.zip '*/OTF/*.otf' -d .
+    find . -type f -name '*.otf' ! -regex '.*\(Regular\|Bold\)\.otf$' -delete || true
+  else
+    echo "思源宋体下载失败（SC），跳过该系列的手动安装。"
+  fi
+  popd >/dev/null
+fi
+
+# 兜底：如果思源仍不可用，至少装上 Noto CJK，保证中文可打印
+if ! fc-list | grep -qi "Source Han"; then
+  echo "未检测到思源字体，安装 Noto CJK 作为兜底..."
+  DEBIAN_FRONTEND=noninteractive apt install -y fonts-noto-cjk fonts-noto-cjk-extra || true
+fi
+
+# 为中文配置字体优先级（sans-serif / serif）
+mkdir -p /etc/fonts/local.conf.d
+cat >/etc/fonts/local.conf.d/60-cjk-prefer.conf <<'CONF'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <alias>
+    <family>sans-serif</family>
+    <prefer>
+      <family>Source Han Sans SC</family>
+      <family>Noto Sans CJK SC</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>serif</family>
+    <prefer>
+      <family>Source Han Serif SC</family>
+      <family>Noto Serif CJK SC</family>
+    </prefer>
+  </alias>
+  <alias>
+    <family>monospace</family>
+    <prefer>
+      <family>Noto Sans Mono CJK SC</family>
+    </prefer>
+  </alias>
+</fontconfig>
+CONF
+
+# 刷新字体缓存
+fc-cache -fsv
+echo "===================思源字体安装与字体缓存已完成==================="
+
 # 基础需求安装完毕。
 echo "===================基础需求安装完毕。==================="
 # 切换用户
