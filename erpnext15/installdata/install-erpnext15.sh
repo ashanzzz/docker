@@ -313,11 +313,23 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
     libmysqlclient-dev \
     xvfb \
     libfontconfig \
-    wkhtmltopdf \
     supervisor \
     pkg-config \
     build-essential \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev
+echo "===================安装 wkhtmltopdf 0.12.6.1 (with patched qt)==================="
+
+# wkhtmltox 运行时常见依赖（若已装会自动跳过）
+DEBIAN_FRONTEND=noninteractive apt install -y libxrender1 libfontconfig1 xfonts-75dpi xfonts-base || true
+
+# 安装官方 jammy_amd64 .deb
+wget -O /tmp/wk.deb "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+DEBIAN_FRONTEND=noninteractive apt install -y /tmp/wk.deb
+rm -f /tmp/wk.deb
+
+# 打印版本确认必须带 (with patched qt)
+wkhtmltopdf --version
+
 # 环境需求检查
 rteArr=()
 warnArr=()
@@ -381,19 +393,23 @@ else
 fi
 # 环境需求检查,wkhtmltox
 if type wkhtmltopdf >/dev/null 2>&1; then
-    result=$(wkhtmltopdf -V | grep "0.12.6" || true)
-    if [[ ${result} == "" ]]
-    then
-        echo '==========已存在wkhtmltox，但不是推荐的0.12.6版本。=========='
-        warnArr[${#warnArr[@]}]='wkhtmltox不是推荐的0.12.6版本。'
+    v="$(wkhtmltopdf --version 2>/dev/null || true)"
+    echo "wkhtmltopdf 版本: $v"
+    if echo "$v" | grep -q "0\.12\.6\.1" && echo "$v" | grep -qi "(with patched qt)"; then
+        echo '==========已安装 wkhtmltopdf 0.12.6.1 (with patched qt)=========='
+    elif echo "$v" | grep -q "0\.12\.6" && echo "$v" | grep -qi "(with patched qt)"; then
+        echo '==========检测到 0.12.6 (with patched qt)——建议升级到 0.12.6.1-2=========='
+        warnArr[${#warnArr[@]}]='wkhtmltopdf 为 0.12.6 (with patched qt)，建议升级到 0.12.6.1-2。'
     else
-        echo '==========已安装wkhtmltox_0.12.6=========='
+        echo '==========wkhtmltopdf 不满足 (0.12.6.x with patched qt) 要求=========='
+        warnArr[${#warnArr[@]}]='wkhtmltopdf 不满足 (with patched qt) 要求。'
     fi
-    rteArr[${#rteArr[@]}]=$(wkhtmltopdf -V)
+    rteArr[${#rteArr[@]}]="$v"
 else
-    echo "==========wkhtmltox安装失败退出脚本！=========="
+    echo "==========wkhtmltopdf 未安装或不可用，退出脚本！=========="
     exit 1
 fi
+
 # 环境需求检查,MariaDB
 # https://mirrors.aliyun.com/mariadb/mariadb-10.6.8/bintar-linux-systemd-x86_64/mariadb-10.6.8-linux-systemd-x86_64.tar.gz
 if type mysql >/dev/null 2>&1; then
