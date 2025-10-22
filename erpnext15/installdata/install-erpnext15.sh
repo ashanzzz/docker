@@ -317,6 +317,101 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
     pkg-config \
     build-essential \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev
+echo "===================安装中文字体（优先 Noto SC OTF，失败则 apt 回退）==================="
+
+set -e
+# 基础工具：curl + unzip + fontconfig
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  ca-certificates curl unzip fontconfig && rm -rf /var/lib/apt/lists/*
+
+install_noto_sc_otf() {
+  set -e
+  local work=/tmp/noto_sc
+  local dest=/usr/local/share/fonts/noto
+  rm -rf "$work"; mkdir -p "$work" "$dest"
+
+  # 两个官方仓库，多版本兜底（版本号变动不影响整体流程）
+  local repos=(
+    "https://github.com/notofonts/noto-cjk/releases/download"
+    "https://github.com/googlefonts/noto-cjk/releases/download"
+  )
+  local sans_tags=( "Sans2.004" "Sans2.003" "Sans2.002" )
+  local serif_tags=( "Serif2.003" "Serif2.002" "Serif2.001" )
+
+  # 下载 Noto Sans SC
+  local got_sans=""
+  for base in "${repos[@]}"; do
+    for tag in "${sans_tags[@]}"; do
+      local url="${base}/${tag}/NotoSansSC.zip"
+      echo "尝试获取：$url"
+      if curl -fsSL --retry 3 -o "$work/NotoSansSC.zip" "$url"; then
+        unzip -o -q "$work/NotoSansSC.zip" -d "$work/sans"
+        got_sans="yes"; break
+      fi
+    done
+    [[ -n "$got_sans" ]] && break
+  done
+
+  # 下载 Noto Serif SC
+  local got_serif=""
+  for base in "${repos[@]}"; do
+    for tag in "${serif_tags[@]}"; do
+      local url="${base}/${tag}/NotoSerifSC.zip"
+      echo "尝试获取：$url"
+      if curl -fsSL --retry 3 -o "$work/NotoSerifSC.zip" "$url"; then
+        unzip -o -q "$work/NotoSerifSC.zip" -d "$work/serif"
+        got_serif="yes"; break
+      fi
+    done
+    [[ -n "$got_serif" ]] && break
+  done
+
+  # 仅拷贝常用字重（Regular/Bold），保持体积最小
+  local copied=0
+  for f in \
+    "$work/sans"/**/NotoSansSC-Regular.otf \
+    "$work/sans"/**/NotoSansSC-Bold.otf \
+    "$work/serif"/**/NotoSerifSC-Regular.otf \
+    "$work/serif"/**/NotoSerifSC-Bold.otf; do
+    [[ -f "$f" ]] && cp -a "$f" "$dest/" && copied=$((copied+1))
+  done
+
+  # 某些版本目录结构不同，再兜底搜一遍
+  if [[ $copied -lt 2 ]]; then
+    find "$work" -type f \( -iname 'NotoSansSC-*.otf' -o -iname 'NotoSerifSC-*.otf' \) \
+      | grep -E '(Regular|Bold)\.otf$' | head -n 8 | xargs -r -I{} cp -a {} "$dest/" || true
+    copied=$(ls "$dest"/*.otf 2>/dev/null | wc -l || true)
+  fi
+
+  fc-cache -f >/dev/null 2>&1 || true
+
+  # 验证字体可用（命中任一名称即视为成功）
+  if { fc-match "Noto Sans SC" >/dev/null 2>&1 || fc-match "Noto Sans CJK SC" >/dev/null 2>&1; } \
+     && { fc-match "Noto Serif SC" >/dev/null 2>&1 || fc-match "Noto Serif CJK SC" >/dev/null 2>&1; }; then
+    echo "Noto SC OTF 安装并可用。"
+    return 0
+  else
+    echo "Noto SC OTF 校验失败。"
+    return 1
+  fi
+}
+
+if install_noto_sc_otf; then
+  echo "✅ 已装：Noto Sans SC / Noto Serif SC（OTF，Regular/Bold）。"
+else
+  echo "⚠️ 远程下载失败，回退 apt 安装整套 CJK（体积较大）……"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    fonts-noto-cjk fonts-noto-color-emoji && rm -rf /var/lib/apt/lists/*
+fi
+
+# 最终刷新字体缓存并输出命中情况
+fc-cache -fsv || true
+echo "Sans 命中："  && (fc-match "Noto Sans SC"   || fc-match "Noto Sans CJK SC"   || true)
+echo "Serif 命中：" && (fc-match "Noto Serif SC"  || fc-match "Noto Serif CJK SC"  || true)
+
+
 echo "===================安装 wkhtmltopdf 0.12.6.1 (with patched qt)==================="
 
 # wkhtmltox 运行时常见依赖（若已装会自动跳过）
