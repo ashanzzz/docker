@@ -36,6 +36,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ERP_MAJOR: '15'   # 只构建 v15.* 版本
 
     steps:
       - name: Checkout
@@ -57,66 +59,88 @@ jobs:
       - name: Install jq & curl deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq curl
 
-      # === 发现 upstream ERPNext 最新版本（多路回退） ===
+      # === 发现 upstream ERPNext v15 最新版本（多路回退，强校验主版本） ===
       - name: Discover upstream ERPNext version (multi-source)
         id: upstream
         shell: bash
         run: |
           set -euo pipefail
 
+          MAJOR="${ERP_MAJOR:-15}"             # 目标主版本
+          PATTERN="^v?${MAJOR}\.[0-9]+\.[0-9]+$"
+
           # helper: 去掉前缀 v
           trim_v() { sed -E 's/^v//'; }
+          starts_with_major() { [[ "$1" =~ ^v?${MAJOR}\. ]]; }
 
           INPUT_VER="${{ inputs.version || '' }}"
           REF_TYPE="${GITHUB_REF_TYPE:-''}"
           REF_NAME="${GITHUB_REF_NAME:-''}"
 
+          pick_from_tags() {
+            git ls-remote --tags --refs https://github.com/frappe/erpnext.git 'v*' \
+            | awk '{print $2}' | awk -F/ '{print $3}' \
+            | grep -E "${PATTERN}" \
+            | sort -V | tail -n1 || true
+          }
+
+          pick_from_releases() {
+            curl -fsSL "https://api.github.com/repos/frappe/erpnext/releases/latest" 2>/dev/null \
+            | jq -r '.tag_name // empty'
+          }
+
+          pick_from_sourceforge() {
+            curl -fsSL 'https://sourceforge.net/projects/erpnext.mirror/files/' 2>/dev/null \
+            | grep -Eo "v${MAJOR}\.[0-9]+\.[0-9]+" | sort -V | tail -n1 || true
+          }
+
+          CANDIDATE=""
+          SRC=""
+
           if [[ -n "${INPUT_VER}" ]]; then
-            # 用户手动指定 → 原样使用
             CANDIDATE="${INPUT_VER}"
             SRC="manual-input"
+            if ! starts_with_major "${CANDIDATE}"; then
+              echo "::warning::输入版本(${CANDIDATE}) 主版本不为 v${MAJOR}，将照样使用。"
+            fi
+
           elif [[ "${REF_TYPE}" == "tag" && -n "${REF_NAME}" ]]; then
-            # tag 触发 → 使用该 tag
             CANDIDATE="${REF_NAME}"
             SRC="self-tag"
-          else
-            SRC=""
-            CANDIDATE=""
+            if ! starts_with_major "${CANDIDATE}"; then
+              echo "::warning::触发 tag(${CANDIDATE}) 主版本不为 v${MAJOR}。"
+            fi
 
-            echo "::group::Method #1: GitHub Releases (latest)"
-            set +e
-            REL=$(curl -fsSL "https://api.github.com/repos/frappe/erpnext/releases/latest" 2>/dev/null | jq -r '.tag_name // empty')
-            RC=$?
-            set -e
-            if [[ ${RC} -eq 0 && -n "${REL}" ]]; then
-              CANDIDATE="${REL}"
-              SRC="github-releases"
-              echo "Found via releases: ${CANDIDATE}"
+          else
+            echo "::group::Method #1: Git tags (prefer v${MAJOR}.*)"
+            T1="$(pick_from_tags)"
+            if [[ -n "${T1}" ]]; then
+              CANDIDATE="${T1}"
+              SRC="git-tags"
+              echo "Found via tags: ${CANDIDATE}"
             fi
             echo "::endgroup::"
 
             if [[ -z "${CANDIDATE}" ]]; then
-              echo "::group::Method #2: Git tags (ls-remote + version sort)"
-              # 获取所有 v* tag，按版本排序取最大
-              ALL=$(git ls-remote --tags --refs https://github.com/frappe/erpnext.git 'v*' \
-                    | awk '{print $2}' | awk -F/ '{print $3}' | sort -V | tail -n1 || true)
-              if [[ -n "${ALL}" ]]; then
-                CANDIDATE="${ALL}"
-                SRC="git-tags"
-                echo "Found via git tags: ${CANDIDATE}"
+              echo "::group::Method #2: GitHub releases (validate major)"
+              T2="$(pick_from_releases || true)"
+              if [[ -n "${T2}" && "${T2}" =~ ${PATTERN} ]]; then
+                CANDIDATE="${T2}"
+                SRC="github-releases"
+                echo "Found via releases: ${CANDIDATE}"
+              else
+                echo "releases/latest 不是 v${MAJOR}.*，跳过。"
               fi
               echo "::endgroup::"
             fi
 
             if [[ -z "${CANDIDATE}" ]]; then
-              echo "::group::Method #3: SourceForge mirror (best-effort scrape)"
-              # 粗略抓取 vXX.YY.ZZ 模式，按版本排序
-              SF=$(curl -fsSL 'https://sourceforge.net/projects/erpnext.mirror/files/' \
-                    | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1 || true)
-              if [[ -n "${SF}" ]]; then
-                CANDIDATE="${SF}"
+              echo "::group::Method #3: SourceForge mirror (best-effort)"
+              T3="$(pick_from_sourceforge || true)"
+              if [[ -n "${T3}" ]]; then
+                CANDIDATE="${T3}"
                 SRC="sourceforge"
                 echo "Found via sourceforge: ${CANDIDATE}"
               fi
@@ -124,18 +148,17 @@ jobs:
             fi
 
             if [[ -z "${CANDIDATE}" ]]; then
-              echo "::error::无法从多源发现 ERPNext 最新版本"
+              echo "::error::无法发现 v${MAJOR}.* 的 ERPNext 版本"
               exit 1
             fi
           fi
 
-          # 归一化：保存带 v 的原样和去 v 的纯版本
           WITH_V="${CANDIDATE}"
           NO_V="$(echo "${CANDIDATE}" | trim_v)"
 
-          echo "upstream_source=${SRC}"        >> "$GITHUB_OUTPUT"
-          echo "upstream_version_raw=${WITH_V}" >> "$GITHUB_OUTPUT"
-          echo "upstream_version=${NO_V}"       >> "$GITHUB_OUTPUT"
+          echo "upstream_source=${SRC}"          >> "$GITHUB_OUTPUT"
+          echo "upstream_version_raw=${WITH_V}"  >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${NO_V}"        >> "$GITHUB_OUTPUT"
 
       # === 决定镜像名与 tags（latest + vX.Y.Z） ===
       - name: Derive image & tags
@@ -150,10 +173,10 @@ jobs:
           VER="${{ steps.upstream.outputs.upstream_version }}"
 
           TAGS="${IMAGE}:latest,${IMAGE}:${VER_V}"
-          echo "image=${IMAGE}"  >> "$GITHUB_OUTPUT"
-          echo "version=${VER}"  >> "$GITHUB_OUTPUT"
-          echo "version_with_v=${VER_V}" >> "$GITHUB_OUTPUT"
-          echo "tags=${TAGS}"    >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}"            >> "$GITHUB_OUTPUT"
+          echo "version=${VER}"            >> "$GITHUB_OUTPUT"
+          echo "version_with_v=${VER_V}"   >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"              >> "$GITHUB_OUTPUT"
 
       # === 查询 GHCR 是否已有同等/更高版本；输出 should_update ===
       - name: Check GHCR existing tags & decide update
@@ -167,6 +190,7 @@ jobs:
           TARGET_V_V="${{ steps.meta.outputs.version_with_v }}"
           TARGET_V="${{ steps.meta.outputs.version }}"
           FORCE_UPDATE="${{ inputs.force_update == true }}"
+          MAJOR="${ERP_MAJOR:-15}"
 
           echo "Target version: ${TARGET_V_V}"
 
@@ -188,47 +212,44 @@ jobs:
             exit 0
           fi
 
-          # 计算 GHCR 已有的“最高版本”（按数字排序；忽略非语义标签如 latest）
+          # 仅比较 v{MAJOR}.*.* 的最高版本（忽略 latest 等非语义标签）
           highest=""
           for t in "${TAGS[@]}"; do
             if [[ "${t}" == "latest" ]]; then continue; fi
             t_nv="${t#v}"
-            # 必须是 x.y.z
-            if [[ "${t_nv}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [[ "${t_nv}" =~ ^${MAJOR}\.[0-9]+\.[0-9]+$ ]]; then
               highest="${highest}"$'\n'"${t_nv}"
             fi
           done
           if [[ -z "${highest}" ]]; then
-            echo "No semver tags on GHCR; need update."
+            echo "No semver v${MAJOR}.* tags on GHCR; need update."
             echo "should_update=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           HIGHEST=$(printf "%s\n" "${highest}" | sort -V | tail -n1)
-          echo "GHCR highest: v${HIGHEST}"
+          echo "GHCR highest (v${MAJOR}): v${HIGHEST}"
 
           need="false"
           if [[ "${FORCE_UPDATE}" == "true" ]]; then
             need="true"
           else
             # 若 GHCR 已有 >= 目标版本，则跳过；否则需要更新
-            # 使用 sort -V 比较
             cmp=$(printf "%s\n%s\n" "${HIGHEST}" "${TARGET_V}" | sort -V | tail -n1)
-            if [[ "${cmp}" != "${HIGHEST}" ]]; then
-              # 正常不会发生
-              need="true"
-            else
+            if [[ "${cmp}" == "${HIGHEST}" ]]; then
+              # GHCR 最高 >= 目标
               if [[ "${HIGHEST}" == "${TARGET_V}" ]]; then
                 need="false"
               else
-                # GHCR 最高 > 目标 → 说明我们更高了，也无需构建
                 need="false"
               fi
+            else
+              need="true"
             fi
           fi
 
           echo "should_update=${need}" >> "$GITHUB_OUTPUT"
           if [[ "${need}" == "false" ]]; then
-            echo "Skip build: GHCR already has ${HIGHEST} (>= ${TARGET_V}) and force_update is false."
+            echo "Skip build: GHCR already has v${HIGHEST} (>= ${TARGET_V}) and force_update is false."
           fi
 
       # === 如需更新：写入/刷新版本文件并提交（保证仓库有改动，便于可追踪） ===
@@ -279,8 +300,8 @@ jobs:
           VER_V="${{ steps.meta.outputs.version_with_v }}"
           git config user.name  "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          # 避免重复 tag
-          if git rev-parse "v${{ steps.meta.outputs.version }}" >/dev/null 2>&1; then
+          # 避免重复 tag（仓库范围）
+          if git rev-parse "${VER_V}" >/dev/null 2>&1; then
             echo "Git tag already exists: ${VER_V}"
           else
             git tag -a "${VER_V}" -m "Release ${VER_V}"
