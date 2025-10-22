@@ -413,7 +413,8 @@ echo "Serif 命中：" && (fc-match "Noto Serif SC"  || fc-match "Noto Serif CJK
 
 
 echo "===================安装 wkhtmltopdf 0.12.6.1 (with patched qt)==================="
-
+# 前面清理过 /var/lib/apt/lists/* 的话，这一步必需
+apt-get update
 # wkhtmltox 运行时常见依赖（若已装会自动跳过）
 DEBIAN_FRONTEND=noninteractive apt install -y libxrender1 libfontconfig1 xfonts-75dpi xfonts-base || true
 
