@@ -979,19 +979,27 @@ else
 fi
 EOF
 rteArr[${#rteArr[@]}]='bench '$(bench --version 2>/dev/null)
-# bensh脚本适配docker
+# bench脚本适配docker
 if [[ ${inDocker} == "yes" ]]; then
-    # 修改bensh脚本不安装fail2ban
-    echo "已配置在docker中运行，将注释安装fail2ban的代码。"
-    # 确认bensh脚本使用supervisor指令代码行
-    f="/usr/local/lib/python3.14/dist-packages/bench/config/production_setup.py"
-    n=$(sed -n "/^[[:space:]]*if not which.*fail2ban-client/=" ${f})
-    # 如找到代码注释判断行及执行行
-    if [ ${n} ]; then
-        echo "找到fail2ban安装代码行，添加注释符。"
-        sed -i "${n} s/^/#&/" ${f}
-        let n++
-        sed -i "${n} s/^/#&/" ${f}
+    # 修改 bench 脚本：避免在容器内尝试安装/启用 fail2ban（通常会失败且无意义）
+    echo "已配置在docker中运行，将尝试注释安装fail2ban的代码。"
+
+    bench_pkg_dir="$(python3 -c 'import bench, pathlib; print(pathlib.Path(bench.__file__).resolve().parent)' 2>/dev/null || true)"
+    f="${bench_pkg_dir}/config/production_setup.py"
+
+    if [[ -f "${f}" ]]; then
+        n=$(sed -n "/^[[:space:]]*if not which.*fail2ban-client/=" "${f}" || true)
+        # 如找到代码注释判断行及执行行
+        if [[ -n "${n}" ]]; then
+            echo "找到fail2ban安装代码行，添加注释符。"
+            sed -i "${n} s/^/#&/" "${f}"
+            n=$((n + 1))
+            sed -i "${n} s/^/#&/" "${f}"
+        else
+            echo "未找到 fail2ban 相关代码行，跳过。"
+        fi
+    else
+        echo "未找到 bench production_setup.py（${f}），跳过 fail2ban patch。"
     fi
 fi
 # 初始化frappe
@@ -1142,13 +1150,16 @@ if [[ ${productionMode} == "yes" ]]; then
     echo "修正脚本代码..."
     if [[ ${supervisorCommand} != "" ]]; then
         echo "可用的supervisor重启指令为："${supervisorCommand}
-        # 确认bensh脚本使用supervisor指令代码行
-        f="/usr/local/lib/python3.14/dist-packages/bench/config/supervisor.py"
-        n=$(sed -n "/service.*supervisor.*reload\|service.*supervisor.*restart/=" ${f})
+        # 确认 bench 脚本使用 supervisor 指令代码行
+        bench_pkg_dir="$(python3 -c 'import bench, pathlib; print(pathlib.Path(bench.__file__).resolve().parent)' 2>/dev/null || true)"
+        f="${bench_pkg_dir}/config/supervisor.py"
+        n=$(sed -n "/service.*supervisor.*reload\|service.*supervisor.*restart/=" "${f}" 2>/dev/null || true)
         # 如找到替换为可用指令
-        if [ ${n} ]; then
-            echo "替换bensh脚本supervisor重启指令为："${supervisorCommand}
-            sed -i "${n} s/reload\|restart/${supervisorCommand}/g" ${f}
+        if [[ -n "${n}" ]]; then
+            echo "替换bench脚本supervisor重启指令为："${supervisorCommand}
+            sed -i "${n} s/reload\|restart/${supervisorCommand}/g" "${f}"
+        else
+            echo "未找到 supervisor 脚本或匹配行，跳过修正。"
         fi
     fi
     # 准备执行开启生产模式脚本
