@@ -807,13 +807,13 @@ sed -i "/^fs.inotify.max_user_watches=.*/d" /etc/sysctl.conf
 echo fs.inotify.max_user_watches=524288 | tee -a /etc/sysctl.conf
 # 使其立即生效
 /sbin/sysctl -p
-# 检查是否安装nodejs20
+# 检查是否安装 nodejs24（Frappe/ERPNext v16 前端构建要求 node >= 24）
 source /etc/profile
 if ! type node >/dev/null 2>&1; then
-    # 获取最新版nodejs-v20，并安装
-    echo "==========获取最新版nodejs-v20，并安装=========="
+    # 获取最新版 nodejs-v24，并安装
+    echo "==========获取最新版nodejs-v24，并安装=========="
     if [ -z $nodejsLink ] ; then
-        nodejsLink=$(curl -sL https://registry.npmmirror.com/-/binary/node/latest-v20.x/ | grep -oE "https?://[a-zA-Z0-9\.\/_&=@$%?~#-]*node-v20\.[0-9][0-9]\.[0-9]{1,2}"-linux-x64.tar.xz | tail -1)
+        nodejsLink=$(curl -sL https://registry.npmmirror.com/-/binary/node/latest-v24.x/ | grep -oE "https?://[a-zA-Z0-9\.\/_&=@$%?~#-]*node-v24\.[0-9][0-9]?\.[0-9]{1,2}"-linux-x64.tar.xz | tail -1)
     else
         echo 已自定义nodejs下载链接，开始下载
     fi
@@ -823,8 +823,8 @@ if ! type node >/dev/null 2>&1; then
     else
         nodejsFileName=${nodejsLink##*/}
         nodejsVer=`t=(${nodejsFileName//-/ });echo ${t[1]}`
-        echo "nodejs20最新版本为：${nodejsVer}"
-        echo "即将安装nodejs20到/usr/local/lib/nodejs/${nodejsVer}"
+        echo "nodejs24最新版本为：${nodejsVer}"
+        echo "即将安装nodejs24到/usr/local/lib/nodejs/${nodejsVer}"
         wget $nodejsLink -P /tmp/
         mkdir -p /usr/local/lib/nodejs
         tar -xJf /tmp/${nodejsFileName} -C /usr/local/lib/nodejs/
@@ -838,13 +838,13 @@ if ! type node >/dev/null 2>&1; then
 fi
 # 环境需求检查,node
 if type node >/dev/null 2>&1; then
-    result=$(node -v | grep "v20." || true)
+    result=$(node -v | grep "v24." || true)
     if [[ ${result} == "" ]]
     then
-        echo '==========已存在node，但不是v20版。这将有可能导致一些问题。建议卸载node后重试。=========='
-        warnArr[${#warnArr[@]}]='node不是推荐的v20版本。'
+        echo '==========已存在node，但不是v24版。这将有可能导致一些问题。建议卸载node后重试。=========='
+        warnArr[${#warnArr[@]}]='node不是推荐的v24版本。'
     else
-        echo '==========已安装node20=========='
+        echo '==========已安装node24=========='
     fi
     rteArr[${#rteArr[@]}]='node '$(node -v)
 else
