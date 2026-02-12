@@ -1,0 +1,321 @@
+name: Build ERPNext AIO Image
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]   # 打 v* tag 时也会触发（并自动用该版本）
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 16.0.0 或 v16.0.0）。若留空且用 tag 触发，会用 tag；否则将自动发现 upstream 最新版'
+        required: false
+      force_update:
+        description: '是否强制更新（忽略“GHCR 已有同等/更高版本就跳过”的逻辑）'
+        type: boolean
+        default: false
+      push_git_tag:
+        description: '构建成功后，把该版本回推为 Git tag（v{version}）'
+        type: boolean
+        default: true
+      force_rebuild:
+        description: '强制全量重建（禁用缓存）'
+        type: boolean
+        default: false
+  schedule:
+    # 每月 1 号 08:00 UTC（美中区大约凌晨 3 点/2 点）自动检查
+    - cron: '0 8 1 * *'
+
+permissions:
+  contents: write   # 回推 Git tag/版本文件 需要
+  packages: write   # 推 GHCR 需要
+
+concurrency:
+  group: erpnext-aio-16-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ERP_MAJOR: '16'   # 只构建 v16.* 版本
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install jq & curl deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      # === 发现 upstream ERPNext v16 最新版本（多路回退，强校验主版本） ===
+      - name: Discover upstream ERPNext version (multi-source)
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAJOR="${ERP_MAJOR:-16}"             # 目标主版本
+          PATTERN="^v?${MAJOR}\.[0-9]+\.[0-9]+$"
+
+          # helper: 去掉前缀 v
+          trim_v() { sed -E 's/^v//'; }
+          starts_with_major() { [[ "$1" =~ ^v?${MAJOR}\. ]]; }
+
+          INPUT_VER="${{ inputs.version || '' }}"
+          REF_TYPE="${GITHUB_REF_TYPE:-''}"
+          REF_NAME="${GITHUB_REF_NAME:-''}"
+
+          pick_from_tags() {
+            git ls-remote --tags --refs https://github.com/frappe/erpnext.git 'v*' \
+            | awk '{print $2}' | awk -F/ '{print $3}' \
+            | grep -E "${PATTERN}" \
+            | sort -V | tail -n1 || true
+          }
+
+          pick_from_releases() {
+            curl -fsSL "https://api.github.com/repos/frappe/erpnext/releases/latest" 2>/dev/null \
+            | jq -r '.tag_name // empty'
+          }
+
+          pick_from_sourceforge() {
+            curl -fsSL 'https://sourceforge.net/projects/erpnext.mirror/files/' 2>/dev/null \
+            | grep -Eo "v${MAJOR}\.[0-9]+\.[0-9]+" | sort -V | tail -n1 || true
+          }
+
+          CANDIDATE=""
+          SRC=""
+
+          if [[ -n "${INPUT_VER}" ]]; then
+            CANDIDATE="${INPUT_VER}"
+            SRC="manual-input"
+            if ! starts_with_major "${CANDIDATE}"; then
+              echo "::warning::输入版本(${CANDIDATE}) 主版本不为 v${MAJOR}，将照样使用。"
+            fi
+
+          elif [[ "${REF_TYPE}" == "tag" && -n "${REF_NAME}" ]]; then
+            CANDIDATE="${REF_NAME}"
+            SRC="self-tag"
+            if ! starts_with_major "${CANDIDATE}"; then
+              echo "::warning::触发 tag(${CANDIDATE}) 主版本不为 v${MAJOR}。"
+            fi
+
+          else
+            echo "::group::Method #1: Git tags (prefer v${MAJOR}.*)"
+            T1="$(pick_from_tags)"
+            if [[ -n "${T1}" ]]; then
+              CANDIDATE="${T1}"
+              SRC="git-tags"
+              echo "Found via tags: ${CANDIDATE}"
+            fi
+            echo "::endgroup::"
+
+            if [[ -z "${CANDIDATE}" ]]; then
+              echo "::group::Method #2: GitHub releases (validate major)"
+              T2="$(pick_from_releases || true)"
+              if [[ -n "${T2}" && "${T2}" =~ ${PATTERN} ]]; then
+                CANDIDATE="${T2}"
+                SRC="github-releases"
+                echo "Found via releases: ${CANDIDATE}"
+              else
+                echo "releases/latest 不是 v${MAJOR}.*，跳过。"
+              fi
+              echo "::endgroup::"
+            fi
+
+            if [[ -z "${CANDIDATE}" ]]; then
+              echo "::group::Method #3: SourceForge mirror (best-effort)"
+              T3="$(pick_from_sourceforge || true)"
+              if [[ -n "${T3}" ]]; then
+                CANDIDATE="${T3}"
+                SRC="sourceforge"
+                echo "Found via sourceforge: ${CANDIDATE}"
+              fi
+              echo "::endgroup::"
+            fi
+
+            if [[ -z "${CANDIDATE}" ]]; then
+              echo "::error::无法发现 v${MAJOR}.* 的 ERPNext 版本"
+              exit 1
+            fi
+          fi
+
+          WITH_V="${CANDIDATE}"
+          NO_V="$(echo "${CANDIDATE}" | trim_v)"
+
+          echo "upstream_source=${SRC}"          >> "$GITHUB_OUTPUT"
+          echo "upstream_version_raw=${WITH_V}"  >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${NO_V}"        >> "$GITHUB_OUTPUT"
+
+      # === 决定镜像名与 tags（latest + vX.Y.Z） ===
+      - name: Derive image & tags
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext16-aio"
+
+          # 统一使用 upstream 发现的版本（或手动/自 tag）
+          VER_V="${{ steps.upstream.outputs.upstream_version_raw }}"
+          VER="${{ steps.upstream.outputs.upstream_version }}"
+
+          TAGS="${IMAGE}:latest,${IMAGE}:${VER_V}"
+          echo "image=${IMAGE}"            >> "$GITHUB_OUTPUT"
+          echo "version=${VER}"            >> "$GITHUB_OUTPUT"
+          echo "version_with_v=${VER_V}"   >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"              >> "$GITHUB_OUTPUT"
+
+      # === 查询 GHCR 是否已有同等/更高版本；输出 should_update ===
+      - name: Check GHCR existing tags & decide update
+        id: decide
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IMAGE_PATH="${{ github.repository_owner }}/erpnext16-aio"
+          TARGET_V_V="${{ steps.meta.outputs.version_with_v }}"
+          TARGET_V="${{ steps.meta.outputs.version }}"
+          FORCE_UPDATE="${{ inputs.force_update == true }}"
+          MAJOR="${ERP_MAJOR:-16}"
+
+          echo "Target version: ${TARGET_V_V}"
+
+          # 列出 GHCR 已有 tags
+          set +e
+          TAG_JSON=$(curl -fsSL -H "Authorization: Bearer ${GHCR_TOKEN}" \
+            "https://ghcr.io/v2/${IMAGE_PATH}/tags/list")
+          RC=$?
+          set -e
+          if [[ ${RC} -ne 0 || -z "${TAG_JSON}" ]]; then
+            echo "GHCR tag list unavailable; assume no existing tags."
+            echo "should_update=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t TAGS < <(echo "${TAG_JSON}" | jq -r '.tags[]?' )
+          if [[ ${#TAGS[@]} -eq 0 ]]; then
+            echo "No tags found on GHCR; need update."
+            echo "should_update=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 仅比较 v{MAJOR}.*.* 的最高版本（忽略 latest 等非语义标签）
+          highest=""
+          for t in "${TAGS[@]}"; do
+            if [[ "${t}" == "latest" ]]; then continue; fi
+            t_nv="${t#v}"
+            if [[ "${t_nv}" =~ ^${MAJOR}\.[0-9]+\.[0-9]+$ ]]; then
+              highest="${highest}"$'\n'"${t_nv}"
+            fi
+          done
+          if [[ -z "${highest}" ]]; then
+            echo "No semver v${MAJOR}.* tags on GHCR; need update."
+            echo "should_update=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HIGHEST=$(printf "%s\n" "${highest}" | sort -V | tail -n1)
+          echo "GHCR highest (v${MAJOR}): v${HIGHEST}"
+
+          need="false"
+          if [[ "${FORCE_UPDATE}" == "true" ]]; then
+            need="true"
+          else
+            # 若 GHCR 已有 >= 目标版本，则跳过；否则需要更新
+            cmp=$(printf "%s\n%s\n" "${HIGHEST}" "${TARGET_V}" | sort -V | tail -n1)
+            if [[ "${cmp}" == "${HIGHEST}" ]]; then
+              # GHCR 最高 >= 目标
+              if [[ "${HIGHEST}" == "${TARGET_V}" ]]; then
+                need="false"
+              else
+                need="false"
+              fi
+            else
+              need="true"
+            fi
+          fi
+
+          echo "should_update=${need}" >> "$GITHUB_OUTPUT"
+          if [[ "${need}" == "false" ]]; then
+            echo "Skip build: GHCR already has v${HIGHEST} (>= ${TARGET_V}) and force_update is false."
+          fi
+
+      # === 如需更新：写入/刷新版本文件并提交（保证仓库有改动，便于可追踪） ===
+      - name: Bump version file & commit
+        if: ${{ steps.decide.outputs.should_update == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER_V="${{ steps.meta.outputs.version_with_v }}"
+          echo "${VER_V}" > erpnext16/UPSTREAM_ERPNext_VERSION
+          git config user.name  "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add erpnext16/UPSTREAM_ERPNext_VERSION
+            git commit -m "chore: bump upstream ERPNext to ${VER_V}"
+            git push
+          else
+            echo "No repo changes to commit."
+          fi
+
+      - name: Build & Push (GHCR)
+        if: ${{ steps.decide.outputs.should_update == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./erpnext16
+          file: ./erpnext16/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: true
+          no-cache: ${{ inputs.force_rebuild == true }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version_with_v }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Smoke test (pull & run)
+        if: ${{ steps.decide.outputs.should_update == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.meta.outputs.image }}"
+          VER_V="${{ steps.meta.outputs.version_with_v }}"
+
+          echo "Smoke test image: ${IMAGE}:${VER_V}"
+          docker pull "${IMAGE}:${VER_V}"
+          docker run --rm --entrypoint bash "${IMAGE}:${VER_V}" -lc 'python3 -V && bench --version'
+
+      # === 可选：构建被跳过时也把原因说清楚 ===
+      - name: Nothing to do
+        if: ${{ steps.decide.outputs.should_update != 'true' }}
+        run: echo "No update needed (or force_update=false and GHCR already >= upstream)."
+
+      # === 成功构建才打 Git tag（手动选项，且不是 tag 触发自身） ===
+      - name: Create & push git tag (optional)
+        if: ${{ steps.decide.outputs.should_update == 'true' && inputs.push_git_tag == true && github.ref_type != 'tag' }}
+        shell: bash
+        run: |
+          set -e
+          VER_V="${{ steps.meta.outputs.version_with_v }}"
+          git config user.name  "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          # 避免重复 tag（仓库范围）
+          if git rev-parse "${VER_V}" >/dev/null 2>&1; then
+            echo "Git tag already exists: ${VER_V}"
+          else
+            git tag -a "${VER_V}" -m "Release ${VER_V}"
+            git push origin "${VER_V}"
+          fi
