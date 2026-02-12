@@ -24,46 +24,48 @@ cd erpnext16
 ```
 
 容器将以后台模式启动，默认映射到宿主机的 80 端口。  
-管理员密码默认为 `admin`，站点名称为 `site1.local`。  
-数据将持久化到两个 Docker 命名卷：
+管理员密码默认为 `admin`，站点名称为 `site1.local`。
 
-* `erpnext16-sites` → `/home/frappe/frappe-bench/sites`
-* `erpnext16-mysql` → `/var/lib/mysql`
+#### 持久化策略（默认目录映射）
 
-> **为什么推荐命名卷而不是目录映射？**  
-> 在目录映射（bind‑mount）时，宿主机目录的所有者和容器内部用户（frappe、mysql）的 UID 不匹配，导致写入失败或权限错误。  
-> 使用命名卷可以让 Docker 自动处理所有权，避免此类问题。
+脚本默认使用 **目录映射（bind‑mount）** 持久化数据到：
 
-### 2. 使用外部数据库
+* `erpnext16/data/sites` → `/home/frappe/frappe-bench/sites`
+* `erpnext16/data/mysql` → `/var/lib/mysql`
 
-如果您已有独立的 MariaDB（10.11 或更高）实例，可设置以下环境变量并运行脚本：
+并在启动前尝试自动修复权限（`FIX_PERMS=yes`，默认开启）。
 
-```bash
-export EXTERNAL_DB=1
-export DB_HOST=192.168.1.100
-export DB_PORT=3306
-export DB_ROOT_USER=root
-export DB_ROOT_PASSWORD=myrootpass
+> 如果你的宿主机目录所在文件系统不支持 `chown`（如某些 NAS/NFS/NTFS 场景），权限修复会失败；此时建议切换到命名卷：
+>
+> ```bash
+> USE_NAMED_VOLUMES=yes ./run-aio.sh
+> ```
 
-./run-aio.sh
-```
+### 2. 外部数据库（说明）
 
-容器将不启动内部的 MariaDB，而是尝试连接您提供的数据库。
+本仓库的 AIO 镜像当前按“一体化”思路构建（容器内含 MariaDB 并由 supervisor 管理）。  
+如果你更希望 **业务容器 + 独立数据库** 的标准架构，我建议直接采用官方推荐的 `frappe/frappe_docker`（维护成本更低、升级路径更清晰）。
 
-## 可选的官方插件
+后续如果你确认要我把本 AIO 镜像改造成“可切换外部 DB”的模式（不启动容器内 MariaDB、通过环境变量连接外部 DB），我可以再做一轮结构性改造。
+## 可选的官方插件（默认不装）
 
-安装脚本默认只安装 **ERPNext 核心**。如果您想一次性获取并安装以下官方插件，可在构建镜像前设置环境变量：
+安装脚本默认只安装 **ERPNext 核心**。你可以在构建镜像时通过环境变量指定要额外安装的官方插件：
 
 ```bash
-export INSTALL_OPTIONAL_APPS=yes
+# 逗号或空格分隔都行
+INSTALL_APPS="hrms,payments" \
+  docker build -t ghcr.io/ashanzzz/erpnext16-aio:latest .
 ```
 
-* payments
-* hrms
-* print_designer
+当前脚本内置识别的官方 slug：
 
-> **注意**：这些插件仅在构建时获取并安装。如需后续增删，请在容器内使用 `bench get-app` 或自行修改 `install-erpnext16.sh`。
+* `hrms`
+* `payments`
+* `print_designer`
 
+你举例的 `hrms` 这种就是官方 app 名（也基本等同于仓库名）。如果你要装其他 app，也可以直接传 repo URL（例如 `https://github.com/frappe/xxx.git`）。
+
+> 注意：这些插件是在镜像构建阶段安装到 bench 里；你后续也可以在运行中的容器里用 `bench get-app` / `bench --site ... install-app` 自行处理。
 ## 构建镜像
 
 ```bash
@@ -73,7 +75,7 @@ docker build -t ghcr.io/ashanzzz/erpnext16-aio:latest .
 构建完成后，您可以推送到 GitHub Container Registry（需要提前登录）：
 
 ```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u ash anzzz --password-stdin
+echo $GITHUB_TOKEN | docker login ghcr.io -u ashanzzz --password-stdin
 docker push ghcr.io/ashanzzz/erpnext16-aio:latest
 ```
 
@@ -87,46 +89,23 @@ docker push ghcr.io/ashanzzz/erpnext16-aio:latest
 | `MARIADB_ROOT_PASSWORD` | `Pass1234` | 内部 MariaDB root 密码 |
 | `ADMIN_PASSWORD` | `admin` | ERPNext 管理员密码 |
 | `SITE_NAME` | `site1.local` | 默认站点名称 |
-| `INSTALL_OPTIONAL_APPS` | `no` | 是否在构建时安装可选插件 |
+| `FIX_PERMS` | `yes` | 目录映射时，启动前是否自动尝试修复权限（bind-mount 场景） |
+| `USE_NAMED_VOLUMES` | `no` | 是否改用 Docker 命名卷（当 bind-mount 的文件系统不支持 chown 时） |
+| `DATA_DIR` | `erpnext16/data` | bind-mount 数据根目录（可覆盖） |
+| `SITES_DIR` | `DATA_DIR/sites` | bind-mount 的 sites 目录（可覆盖） |
+| `MYSQL_DIR` | `DATA_DIR/mysql` | bind-mount 的 mysql 目录（可覆盖） |
 
-## 使用外部数据库（docker‑compose 示例）
+构建时可选环境变量：
 
-```yaml
-version: '3.8'
-
-services:
-  db:
-    image: mariadb:10.11
-    environment:
-      MYSQL_ROOT_PASSWORD: myrootpass
-    volumes:
-      - db-data:/var/lib/mysql
-    ports:
-      - "3306:3306"
-
-  erpnext:
-    image: ghcr.io/ashanzzz/erpnext16-aio:latest
-    ports:
-      - "80:80"
-    environment:
-      DB_HOST: db
-      DB_PORT: 3306
-      DB_ROOT_USER: root
-      DB_ROOT_PASSWORD: myrootpass
-      ADMIN_PASSWORD: admin
-      SITE_NAME: site1.local
-    volumes:
-      - erpnext-sites:/home/frappe/frappe-bench/sites
-
-volumes:
-  db-data:
-  erpnext-sites:
-```
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `INSTALL_APPS` | 空 | 构建时额外安装的 app（逗号或空格分隔，如 `hrms,payments`） |
+| `INSTALL_ERPNEXT_CHINESE` | `no` | 构建时是否安装非官方中文本地化 app |
 
 ## 常见问题
 
 1. **目录映射保存失败**  
-   如上文所述，推荐使用 Docker 命名卷（named volume）来持久化数据，避免权限问题。
+   默认脚本会尝试 `chown` 修复权限；如果仍失败（常见于不支持 chown 的文件系统），再切换 `USE_NAMED_VOLUMES=yes`。
 
 2. **如何修改站点名称或管理员密码**  
    可通过环境变量 `SITE_NAME` 与 `ADMIN_PASSWORD` 覆盖。

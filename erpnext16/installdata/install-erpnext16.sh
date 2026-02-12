@@ -1036,11 +1036,26 @@ cd ~/${installDir}
 echo "===================获取应用==================="
 bench get-app ${erpnextBranch} ${erpnextPath}
 
-# Optional official apps (disabled by default). Enable via: INSTALL_OPTIONAL_APPS=yes
-if [[ "${INSTALL_OPTIONAL_APPS:-no}" == "yes" ]]; then
-    bench get-app payments
-    bench get-app ${erpnextBranch} hrms
-    bench get-app print_designer
+# Optional official apps (disabled by default).
+# Usage example:
+#   INSTALL_APPS="hrms,payments"   # comma or space separated
+APPS_RAW="${INSTALL_APPS:-}"
+APPS_RAW="$(echo "$APPS_RAW" | tr ',' ' ')"
+if [[ -n "$APPS_RAW" ]]; then
+    for app in $APPS_RAW; do
+        case "$app" in
+            hrms|payments|print_designer)
+                bench get-app ${erpnextBranch} "$app"
+                ;;
+            http://*|https://*)
+                bench get-app ${erpnextBranch} "$app"
+                ;;
+            *)
+                echo "[warn] Unknown app '$app' (expected official slug like hrms/payments/print_designer, or a repo URL)."
+                bench get-app ${erpnextBranch} "$app"
+                ;;
+        esac
+    done
 fi
 EOF
 # 建立新网站
@@ -1053,10 +1068,21 @@ EOF
 su - ${userName} <<EOF
 cd ~/${installDir}
 echo "===================安装erpnext应用到新网站==================="
-bench --site ${siteName} install-app payments
 bench --site ${siteName} install-app erpnext
-bench --site ${siteName} install-app hrms
-bench --site ${siteName} install-app print_designer
+
+APPS_RAW="${INSTALL_APPS:-}"
+APPS_RAW="$(echo "$APPS_RAW" | tr ',' ' ')"
+if [[ -n "$APPS_RAW" ]]; then
+    for app in $APPS_RAW; do
+        if [[ "$app" == http://* || "$app" == https://* ]]; then
+            app_name="$(basename "$app")"
+            app_name="${app_name%.git}"
+        else
+            app_name="$app"
+        fi
+        bench --site ${siteName} install-app "$app_name"
+    done
+fi
 EOF
 # 站点配置
 su - ${userName} <<EOF
@@ -1068,15 +1094,17 @@ bench config http_timeout 6000
 bench config serve_default_site on
 bench use ${siteName}
 EOF
-# 安装中文本地化,只有框架，需要自行编辑zh.csv文件添加翻译词条。
-# 详情请见：https://gitee.com/phipsoft/zh_chinese_language
+# Optional: non-official localization app (disabled by default)
+# Enable via: INSTALL_ERPNEXT_CHINESE=yes
+if [[ "${INSTALL_ERPNEXT_CHINESE:-no}" == "yes" ]]; then
 su - ${userName} <<EOF
 cd ~/${installDir}
-echo "===================安装中文本地化==================="
+echo "===================安装中文本地化（可选）==================="
 bench get-app https://gitee.com/yuzelin/erpnext_chinese.git
 bench --site ${siteName} install-app erpnext_chinese
 bench clear-cache && bench clear-website-cache
 EOF
+fi
 # 清理工作台
 su - ${userName} <<EOF
 cd ~/${installDir}

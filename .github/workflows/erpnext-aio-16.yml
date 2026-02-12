@@ -286,6 +286,18 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version_with_v }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: Smoke test (pull & run)
+        if: ${{ steps.decide.outputs.should_update == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.meta.outputs.image }}"
+          VER_V="${{ steps.meta.outputs.version_with_v }}"
+
+          echo "Smoke test image: ${IMAGE}:${VER_V}"
+          docker pull "${IMAGE}:${VER_V}"
+          docker run --rm --entrypoint bash "${IMAGE}:${VER_V}" -lc 'python3 -V && bench --version'
+
       # === 可选：构建被跳过时也把原因说清楚 ===
       - name: Nothing to do
         if: ${{ steps.decide.outputs.should_update != 'true' }}
