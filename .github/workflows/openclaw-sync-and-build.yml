@@ -1,0 +1,98 @@
+name: OpenClaw Sync & Build
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # daily UTC
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force image build even when docker-setup.sh unchanged'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: openclaw-sync-and-build
+  cancel-in-progress: false
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Sync upstream docker-setup.sh
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPSTREAM_URL="https://raw.githubusercontent.com/openclaw/openclaw/main/docker-setup.sh"
+          TARGET="openclaw/upstream/docker-setup.sh"
+
+          mkdir -p "$(dirname "$TARGET")"
+          curl -fsSL "$UPSTREAM_URL" -o "$TARGET.new"
+
+          if [ -f "$TARGET" ] && cmp -s "$TARGET" "$TARGET.new"; then
+            rm -f "$TARGET.new"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream changes."
+          else
+            mv "$TARGET.new" "$TARGET"
+            chmod +x "$TARGET"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream changed; file updated."
+          fi
+
+      - name: Commit synced script
+        if: ${{ steps.sync.outputs.changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git add openclaw/upstream/docker-setup.sh
+          git commit -m "chore(openclaw): sync upstream docker-setup.sh"
+          git push
+
+      - name: Set up QEMU
+        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push OpenClaw image
+        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./openclaw
+          file: ./openclaw/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/openclaw-custom:latest
+            ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ github.run_number }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=openclaw-custom
