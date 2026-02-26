@@ -29,7 +29,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl
+          sudo apt-get install -y curl jq
 
       - name: Sync upstream docker-setup.sh
         id: sync
@@ -64,6 +64,19 @@ jobs:
           git commit -m "chore(openclaw): sync upstream docker-setup.sh"
           git push
 
+      - name: Resolve official OpenClaw version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          OFFICIAL_TAG=$(curl -fsSL https://api.github.com/repos/openclaw/openclaw/releases/latest | jq -r '.tag_name // empty')
+          if [ -z "$OFFICIAL_TAG" ] || [ "$OFFICIAL_TAG" = "null" ]; then
+            OFFICIAL_TAG=$(curl -fsSL https://api.github.com/repos/openclaw/openclaw/tags?per_page=1 | jq -r '.[0].name')
+          fi
+          OFFICIAL_TAG=${OFFICIAL_TAG#v}
+          echo "official_version=$OFFICIAL_TAG" >> "$GITHUB_OUTPUT"
+          echo "Official version: $OFFICIAL_TAG"
+
       - name: Set up QEMU
         if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
         uses: docker/setup-qemu-action@v3
@@ -91,15 +104,17 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/openclaw-custom:latest
-            ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ github.run_number }}
+            ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}
+            ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}-r${{ github.run_number }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=openclaw-custom
+            org.opencontainers.image.version=${{ steps.ver.outputs.official_version }}
 
       - name: Smoke-check image metadata
         if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ github.run_number }}
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}
