@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Force image build even when docker-setup.sh unchanged'
+        description: 'Force build even if official version tag already exists'
         type: boolean
         default: false
 
@@ -45,12 +45,12 @@ jobs:
           if [ -f "$TARGET" ] && cmp -s "$TARGET" "$TARGET.new"; then
             rm -f "$TARGET.new"
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No upstream changes."
+            echo "No upstream docker-setup.sh changes."
           else
             mv "$TARGET.new" "$TARGET"
             chmod +x "$TARGET"
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Upstream changed; file updated."
+            echo "Upstream docker-setup.sh changed; file updated."
           fi
 
       - name: Commit synced script
@@ -77,16 +77,45 @@ jobs:
           echo "official_version=$OFFICIAL_TAG" >> "$GITHUB_OUTPUT"
           echo "Official version: $OFFICIAL_TAG"
 
+      - name: Decide whether build is needed
+        id: decide
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          FORCE_BUILD="${{ inputs.force_build == true }}"
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_PATH="${OWNER_LC}/openclaw-custom"
+          VERSION="${{ steps.ver.outputs.official_version }}"
+
+          if [ "$FORCE_BUILD" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=force_build" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAGS_JSON=$(curl -fsSL -H "Authorization: Bearer ${GHCR_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
+          if [ -n "$TAGS_JSON" ] && echo "$TAGS_JSON" | jq -e --arg v "$VERSION" '.tags // [] | index($v) != null' >/dev/null; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "reason=official_version_exists" >> "$GITHUB_OUTPUT"
+            echo "Skip build: ghcr.io/${IMAGE_PATH}:${VERSION} already exists."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=official_version_missing" >> "$GITHUB_OUTPUT"
+            echo "Build required: official version tag ${VERSION} is not present."
+          fi
+
       - name: Set up QEMU
-        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
-        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -94,7 +123,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & Push OpenClaw image
-        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ./openclaw
@@ -113,8 +142,13 @@ jobs:
             org.opencontainers.image.version=${{ steps.ver.outputs.official_version }}
 
       - name: Smoke-check image metadata
-        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}
+
+      - name: Nothing to build
+        if: ${{ steps.decide.outputs.should_build != 'true' }}
+        run: |
+          echo "No build needed. Reason: ${{ steps.decide.outputs.reason }}"
