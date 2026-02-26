@@ -96,3 +96,10 @@ jobs:
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=openclaw-custom
+
+      - name: Smoke-check image metadata
+        if: ${{ steps.sync.outputs.changed == 'true' || inputs.force_build == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ github.run_number }}
