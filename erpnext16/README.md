@@ -47,25 +47,19 @@ cd erpnext16
 如果你更希望 **业务容器 + 独立数据库** 的标准架构，我建议直接采用官方推荐的 `frappe/frappe_docker`（维护成本更低、升级路径更清晰）。
 
 后续如果你确认要我把本 AIO 镜像改造成“可切换外部 DB”的模式（不启动容器内 MariaDB、通过环境变量连接外部 DB），我可以再做一轮结构性改造。
-## 可选的官方插件（默认不装）
+## 官方插件策略（默认不装，脚本里保留注释模板）
 
-安装脚本默认只安装 **ERPNext 核心**。你可以在构建镜像时通过环境变量指定要额外安装的官方插件：
+当前安装脚本遵循：
 
-```bash
-# 逗号或空格分隔都行
-INSTALL_APPS="hrms,payments" \
-  docker build -t ghcr.io/ashanzzz/erpnext16-aio:latest .
-```
+- **必装（官方核心）**：`frappe + payments + erpnext`
+- **可选（官方插件）**：默认不安装，但在脚本中已预留注释模板，随时手动打开
 
-当前脚本内置识别的官方 slug：
+已预留的官方插件模板：
 
-* `hrms`
-* `payments`
-* `print_designer`
+- `hrms`
+- `print_designer`
 
-你举例的 `hrms` 这种就是官方 app 名（也基本等同于仓库名）。如果你要装其他 app，也可以直接传 repo URL（例如 `https://github.com/frappe/xxx.git`）。
-
-> 注意：这些插件是在镜像构建阶段安装到 bench 里；你后续也可以在运行中的容器里用 `bench get-app` / `bench --site ... install-app` 自行处理。
+你可以直接编辑 `installdata/install-erpnext16.sh`，取消对应 `bench get-app` / `bench --site ... install-app` 的注释后重建镜像。这样保持默认镜像干净，同时可按需快速扩展。
 ## 构建镜像
 
 ```bash

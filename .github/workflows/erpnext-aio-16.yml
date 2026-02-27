@@ -1,9 +1,6 @@
 name: Build ERPNext AIO Image
 
 on:
-  push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]   # 打 v* tag 时也会触发（并自动用该版本）
   workflow_dispatch:
     inputs:
       version:
