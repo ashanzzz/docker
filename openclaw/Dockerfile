@@ -1,4 +1,7 @@
-FROM ghcr.io/openclaw/openclaw:latest
+# Pin OpenClaw base image by official version when building in CI.
+# Default remains latest for local builds.
+ARG OPENCLAW_VERSION=latest
+FROM ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
 
 USER root
 

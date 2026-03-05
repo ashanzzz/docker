@@ -2,7 +2,8 @@ name: OpenClaw Sync & Build
 
 on:
   schedule:
-    - cron: '0 2 * * *' # daily UTC
+    # Run multiple times per day to reduce lag behind upstream releases.
+    - cron: '0 */6 * * *' # every 6 hours (UTC)
   workflow_dispatch:
     inputs:
       force_build:
@@ -67,21 +68,38 @@ jobs:
       - name: Resolve official OpenClaw version
         id: ver
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          OFFICIAL_TAG=$(curl -fsSL https://api.github.com/repos/openclaw/openclaw/releases/latest | jq -r '.tag_name // empty')
+          # Use an authenticated GitHub API call to avoid rate limits.
+          OFFICIAL_TAG=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/openclaw/openclaw/releases/latest \
+            | jq -r '.tag_name // empty')
+
           if [ -z "$OFFICIAL_TAG" ] || [ "$OFFICIAL_TAG" = "null" ]; then
-            OFFICIAL_TAG=$(curl -fsSL https://api.github.com/repos/openclaw/openclaw/tags?per_page=1 | jq -r '.[0].name')
+            OFFICIAL_TAG=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/openclaw/openclaw/tags?per_page=1 \
+              | jq -r '.[0].name')
           fi
+
           OFFICIAL_TAG=${OFFICIAL_TAG#v}
+          if [ -z "$OFFICIAL_TAG" ] || [ "$OFFICIAL_TAG" = "null" ]; then
+            echo "Failed to resolve official OpenClaw version" >&2
+            exit 1
+          fi
+
           echo "official_version=$OFFICIAL_TAG" >> "$GITHUB_OUTPUT"
           echo "Official version: $OFFICIAL_TAG"
+          echo "official_version=$OFFICIAL_TAG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Decide whether build is needed
         id: decide
         shell: bash
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           FORCE_BUILD="${{ inputs.force_build == true }}"
@@ -89,21 +107,27 @@ jobs:
           IMAGE_PATH="${OWNER_LC}/openclaw-custom"
           VERSION="${{ steps.ver.outputs.official_version }}"
 
+          echo "image_path=$IMAGE_PATH" >> "$GITHUB_STEP_SUMMARY"
+
           if [ "$FORCE_BUILD" = "true" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "reason=force_build" >> "$GITHUB_OUTPUT"
+            echo "Build decision: FORCE_BUILD=true" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          TAGS_JSON=$(curl -fsSL -H "Authorization: Bearer ${GHCR_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
+          # Proper GHCR auth: exchange scope for a registry bearer token.
+          GHCR_PULL_TOKEN=$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" | jq -r '.token')
+          TAGS_JSON=$(curl -fsSL -H "Authorization: Bearer ${GHCR_PULL_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
+
           if [ -n "$TAGS_JSON" ] && echo "$TAGS_JSON" | jq -e --arg v "$VERSION" '.tags // [] | index($v) != null' >/dev/null; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "reason=official_version_exists" >> "$GITHUB_OUTPUT"
-            echo "Skip build: ghcr.io/${IMAGE_PATH}:${VERSION} already exists."
+            echo "Skip build: ghcr.io/${IMAGE_PATH}:${VERSION} already exists." | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "reason=official_version_missing" >> "$GITHUB_OUTPUT"
-            echo "Build required: official version tag ${VERSION} is not present."
+            echo "Build required: official version tag ${VERSION} is not present." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Set up QEMU
@@ -131,6 +155,8 @@ jobs:
           platforms: linux/amd64
           pull: true
           push: true
+          build-args: |
+            OPENCLAW_VERSION=${{ steps.ver.outputs.official_version }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/openclaw-custom:latest
             ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}
