@@ -8,5 +8,6 @@ COPY packages.txt /tmp/packages.txt
 
 RUN set -eux; \
   apt-get update; \
-  xargs -r -a /tmp/packages.txt apt-get install -y --no-install-recommends; \
+  # Filter comments/blank lines so packages.txt can be documented.
+  grep -vE '^\s*(#|$)' /tmp/packages.txt | xargs -r apt-get install -y --no-install-recommends; \
   rm -rf /var/lib/apt/lists/* /tmp/packages.txt
