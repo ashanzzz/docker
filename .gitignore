@@ -1,3 +1,5 @@
 # Local persistence directories (bind-mount)
 /erpnext16/data/
 /erpnext15/data/
+# ignore local secrets
+nextcloud/.env
