@@ -1,6 +1,8 @@
 # Core
 ffmpeg
 procps
+curl
+ca-certificates
 
 # Better previews / media metadata (recommended for Photos/Memories/PDF previews)
 # NOTE: keep list conservative; avoid huge packages unless needed.
