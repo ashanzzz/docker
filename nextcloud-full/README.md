@@ -29,8 +29,9 @@ See `packages.txt`.
 
 ## Tags
 
-- `ghcr.io/ashanzzz/nextcloud-full:<33.x.y>-apache-full` (immutable)
-- `ghcr.io/ashanzzz/nextcloud-full:33-apache-full` (moving)
+- `ghcr.io/ashanzzz/nextcloud-full:<33.x.y>-apache-full` (immutable, recommended for production pinning)
+- `ghcr.io/ashanzzz/nextcloud-full:33-apache-full` (moving, tracks latest 33 patch)
+- `ghcr.io/ashanzzz/nextcloud-full:latest` (moving, convenience tag; equivalent to latest built)
 
 ## Automation
 
