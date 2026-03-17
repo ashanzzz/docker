@@ -32,6 +32,12 @@ See `packages.txt`.
 - 我们在镜像里内置了 **libtensorflow (CPU)**（默认 2.9.1），用于避免 Recognize 的 MoViNet 视频分类在某些环境里因为缺 `libtensorflow.so.2` 而回退到 WASM，进而报错：`Movinet does not support WASM mode`。
 - 代价：镜像体积会明显增大（数百 MB 级）。
 
+## Recognize GPU mode (stability hook)
+
+- 识别 GPU 模式在一些安装里会遇到：`tfjs-node-gpu` 缺少 `tfjs_binding.node`，导致报错并中断分类。
+- 本镜像包含一个 entrypoint hook：如果检测到 `tfjs-node-gpu` 缺 binding，会自动用 `tfjs-node` 的 CPU binding 做兜底拷贝，避免 GPU 模式直接崩溃。
+- 说明：这能保证“功能不报错”，但**不等同于真正 GPU 加速**（真正 GPU 加速还需完整的 tfjs-node-gpu binding + CUDA 依赖链）。
+
 ## Tags
 
 - `ghcr.io/ashanzzz/nextcloud-full:<33.x.y>-apache-full` (immutable, recommended for production pinning)

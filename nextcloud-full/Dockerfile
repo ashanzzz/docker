@@ -31,3 +31,7 @@ RUN set -eux; \
   install -m 0755 "$TMPDIR/lib/libtensorflow_framework.so" /usr/local/lib/libtensorflow_framework.so; \
   ldconfig; \
   rm -rf "$TMPDIR"
+
+# Entry-point hooks (for runtime auto-fixes; keep minimal)
+COPY docker-entrypoint-hooks.d/ /docker-entrypoint-hooks.d/
+RUN chmod +x /docker-entrypoint-hooks.d/before-starting/*.sh
