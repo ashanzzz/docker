@@ -25,7 +25,12 @@ We follow upstream by reading `https://raw.githubusercontent.com/nextcloud/docke
 See `packages.txt`.
 
 - **Video/preview baseline**: `ffmpeg`
-- **AI/识别类 apps**：本镜像只提供系统依赖；真正的“识别”通常来自 Nextcloud App（例如 Recognize），需要在 Nextcloud Web 里安装/启用，并确保 cron/后台任务在跑。
+- **AI/识别类 apps**：本镜像提供系统依赖；真正的“识别”来自 Nextcloud App（例如 Recognize），需要在 Nextcloud Web 里安装/启用，并确保 cron/后台任务在跑。
+
+## Built-in TensorFlow runtime (for Recognize video tagging)
+
+- 我们在镜像里内置了 **libtensorflow (CPU)**（默认 2.9.1），用于避免 Recognize 的 MoViNet 视频分类在某些环境里因为缺 `libtensorflow.so.2` 而回退到 WASM，进而报错：`Movinet does not support WASM mode`。
+- 代价：镜像体积会明显增大（数百 MB 级）。
 
 ## Tags
 
