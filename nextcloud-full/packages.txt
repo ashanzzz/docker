@@ -1,0 +1,13 @@
+# Core
+ffmpeg
+procps
+
+# Better previews / media metadata (recommended for Photos/Memories/PDF previews)
+# NOTE: keep list conservative; avoid huge packages unless needed.
+exiftool
+ghostscript
+imagemagick
+poppler-utils
+libheif1
+libde265-0
+libwebp7
