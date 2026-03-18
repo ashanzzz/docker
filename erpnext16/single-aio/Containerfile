@@ -55,6 +55,12 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 # Copy bench from builder stage
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
+# If users mount an empty sites volume, it would hide the image's default sites files
+# (apps.txt, assets/, etc). Keep a copy outside the volume so entrypoint can bootstrap.
+RUN mkdir -p /opt/sites-skel && \
+    cp -a /home/frappe/frappe-bench/sites/. /opt/sites-skel/ && \
+    chown -R frappe:frappe /opt/sites-skel
+
 # AIO rootfs (supervisor configs + entrypoint)
 COPY rootfs/ /
 

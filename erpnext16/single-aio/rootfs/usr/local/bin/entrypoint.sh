@@ -17,6 +17,38 @@ mkdir -p /run/mysqld /var/lib/redis /var/log/supervisor
 chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
 chown -R redis:redis /var/lib/redis || true
 
+# If /home/frappe/frappe-bench/sites is mounted as an empty volume, it will hide the
+# default apps.txt + assets/ shipped in the image. Bootstrap missing files from /opt/sites-skel.
+bootstrap_sites_volume() {
+  local dst=/home/frappe/frappe-bench/sites
+  local src=/opt/sites-skel
+
+  mkdir -p "$dst"
+
+  if [ -f "$src/apps.txt" ] && [ ! -f "$dst/apps.txt" ]; then
+    echo "[aio] Bootstrapping sites/apps.txt"
+    cp -a "$src/apps.txt" "$dst/apps.txt"
+  fi
+
+  if [ -f "$src/apps.json" ] && [ ! -f "$dst/apps.json" ]; then
+    echo "[aio] Bootstrapping sites/apps.json"
+    cp -a "$src/apps.json" "$dst/apps.json"
+  fi
+
+  if [ -f "$src/common_site_config.json" ] && [ ! -f "$dst/common_site_config.json" ]; then
+    echo "[aio] Bootstrapping sites/common_site_config.json"
+    cp -a "$src/common_site_config.json" "$dst/common_site_config.json"
+  fi
+
+  if [ -d "$src/assets" ] && [ ! -d "$dst/assets" ]; then
+    echo "[aio] Bootstrapping sites/assets/"
+    cp -a "$src/assets" "$dst/assets"
+  fi
+
+  chown -R frappe:frappe "$dst" || true
+}
+bootstrap_sites_volume
+
 # Initialize MariaDB datadir if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
   echo "[aio] Initializing MariaDB data directory..."
