@@ -1,6 +1,6 @@
 name: Build ERPNext16 single-container AIO image
 
-on:
+"on":
   pull_request: {}
   workflow_dispatch:
     inputs:
