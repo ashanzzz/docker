@@ -11,7 +11,7 @@
 
 ## Features（默认启用）
 
-- Nextcloud（Apache 版，便于单容器直接反代）
+- Nextcloud（Apache 版，便于单容器直接反代；默认建议使用本仓库维护的增强镜像 `ghcr.io/ashanzzz/nextcloud-full:33-apache-full`）
 - MariaDB（持久化）
 - Redis（内存缓存 + file locking）
 - Cron（独立容器跑后台任务，避免 AJAX/请求触发）
