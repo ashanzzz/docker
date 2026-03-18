@@ -6,6 +6,7 @@ set -euo pipefail
 : "${SITE_NAME:=site1.local}"
 : "${ADMIN_PASSWORD:=admin}"
 : "${MARIADB_ROOT_PASSWORD:=ChangeMe_Strong_DB_Password}"
+: "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
 
 # nginx-entrypoint.sh expects these; we use local ports
 : "${FRAPPE_SITE_NAME_HEADER:=$SITE_NAME}"
@@ -92,7 +93,7 @@ su - frappe -c "cd /home/frappe/frappe-bench && \
 if [ ! -d "/home/frappe/frappe-bench/sites/${SITE_NAME}" ]; then
   echo "[aio] Creating site: ${SITE_NAME}"
   su - frappe -c "cd /home/frappe/frappe-bench && \
-    bench new-site --mariadb-user-host-login-scope='%' \
+    bench new-site --mariadb-user-host-login-scope='${MARIADB_USER_HOST_LOGIN_SCOPE}' \
       --db-root-password '${MARIADB_ROOT_PASSWORD}' \
       --admin-password '${ADMIN_PASSWORD}' \
       --install-app erpnext \

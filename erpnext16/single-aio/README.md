@@ -11,17 +11,18 @@
 ```bash
 docker run -d --name erpnext16 \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 6888:8080 \
   -e SITE_NAME=site1.local \
   -e ADMIN_PASSWORD=ChangeMe_Admin \
   -e MARIADB_ROOT_PASSWORD=ChangeMe_Strong_DB \
+  -e MARIADB_USER_HOST_LOGIN_SCOPE=localhost \
   -v /mnt/user/appdata/erpnext16/sites:/home/frappe/frappe-bench/sites \
   -v /mnt/user/appdata/erpnext16/mysql:/var/lib/mysql \
   -v /mnt/user/appdata/erpnext16/redis:/var/lib/redis \
   ghcr.io/ashanzzz/erpnext16:aio
 ```
 
-访问：`http://<unraid-ip>:8080`
+访问：`http://<unraid-ip>:6888`
 
 ## 升级
 
