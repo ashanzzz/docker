@@ -1,12 +1,17 @@
-# ERPNext16 on Unraid — deploy with `docker run` (no compose)
+# ERPNext16 on Unraid — 多容器 `docker run`（no compose）
+
+> 你当前主方案是 **单容器 AIO**（更符合“Unraid 只用一个 docker run”）：
+> - 先看：`erpnext16/single-aio/README.md`
+
+本文件是 **可选方案**：不用 compose，但仍按官方多进程拓扑拆成多个容器来跑。
 
 目标：
-- 镜像由 GitHub Actions 构建并推送：`ghcr.io/ashanzzz/erpnext16:<tag>`
-- Unraid 侧不使用 compose，不跑自定义脚本；只用 `docker run`（或按 Unraid Docker UI 模板逐个创建容器）
+- 镜像由 GitHub Actions 构建并推送：`ghcr.io/<你的GitHub用户名>/erpnext16:<tag>`
+- Unraid 侧不使用 compose，不跑自定义脚本；只用 `docker run`
 
-> 重要澄清：**一个镜像 ≠ 一个容器**。
-> ERPNext/Frappe 官方推荐是多服务（backend/frontend/websocket/worker/scheduler + db + redis）。
-> 这里我们做到的是：**ERPNext 相关服务全部使用同一个镜像**，但仍然需要多个容器来跑不同进程。
+重要澄清：**一个镜像 ≠ 一个容器**。
+- 官方推荐是多服务（backend/frontend/websocket/worker/scheduler + db + redis）
+- 这里做到的是：**ERPNext 相关服务全部使用同一个镜像**，但仍然需要多个容器来跑不同进程
 
 ---
 

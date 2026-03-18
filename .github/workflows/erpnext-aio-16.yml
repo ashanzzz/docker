@@ -96,6 +96,4 @@ jobs:
             APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.upstream.outputs.ver_v }}
-            ghcr.io/${{ github.repository_owner }}/erpnext16:v16
-            ghcr.io/${{ github.repository_owner }}/erpnext16:version-16
             ghcr.io/${{ github.repository_owner }}/erpnext16:latest
