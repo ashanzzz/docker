@@ -85,6 +85,13 @@ SUP_PID=$!
 
 SITES_DIR=/home/frappe/frappe-bench/sites
 
+# Ensure frappe can write to the mounted sites volume (Unraid often creates root-owned dirs)
+if ! su - frappe -c "test -w '${SITES_DIR}'" >/dev/null 2>&1; then
+  echo "[aio] Fixing permissions for sites volume..."
+  chown -R frappe:frappe "${SITES_DIR}" || true
+  chmod 775 "${SITES_DIR}" || true
+fi
+
 # When users mount an empty volume to /home/frappe/frappe-bench/sites,
 # the image-provided metadata files (apps.txt/apps.json/common_site_config.json)
 # are hidden and bench will crash. Bootstrap minimal required files.
