@@ -117,8 +117,17 @@ jobs:
           fi
 
           # Proper GHCR auth: exchange scope for a registry bearer token.
-          GHCR_PULL_TOKEN=$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" | jq -r '.token')
-          TAGS_JSON=$(curl -fsSL -H "Authorization: Bearer ${GHCR_PULL_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
+          # NOTE: token endpoint may return 403 if the package doesn't exist yet; treat that as "needs build".
+          GHCR_PULL_TOKEN=$(curl -sS "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" | jq -r '.token // empty' || true)
+
+          if [ -z "$GHCR_PULL_TOKEN" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=package_missing" >> "$GITHUB_OUTPUT"
+            echo "Build required: ghcr.io/${IMAGE_PATH} not found yet (first build)." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          TAGS_JSON=$(curl -sS -H "Authorization: Bearer ${GHCR_PULL_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
 
           if [ -n "$TAGS_JSON" ] && echo "$TAGS_JSON" | jq -e --arg v "$VERSION" '.tags // [] | index($v) != null' >/dev/null; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
