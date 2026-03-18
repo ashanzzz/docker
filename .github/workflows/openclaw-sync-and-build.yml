@@ -104,7 +104,7 @@ jobs:
           set -euo pipefail
           FORCE_BUILD="${{ inputs.force_build == true }}"
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_PATH="${OWNER_LC}/openclaw-custom"
+          IMAGE_PATH="${OWNER_LC}/openclaw"
           VERSION="${{ steps.ver.outputs.official_version }}"
 
           echo "image_path=$IMAGE_PATH" >> "$GITHUB_STEP_SUMMARY"
@@ -158,13 +158,13 @@ jobs:
           build-args: |
             OPENCLAW_VERSION=${{ steps.ver.outputs.official_version }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/openclaw-custom:latest
-            ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}
-            ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}-r${{ github.run_number }}
+            ghcr.io/${{ github.repository_owner }}/openclaw:latest
+            ghcr.io/${{ github.repository_owner }}/openclaw:${{ steps.ver.outputs.official_version }}
+            ghcr.io/${{ github.repository_owner }}/openclaw:${{ steps.ver.outputs.official_version }}-r${{ github.run_number }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=openclaw-custom
+            org.opencontainers.image.title=openclaw
             org.opencontainers.image.version=${{ steps.ver.outputs.official_version }}
 
       - name: Smoke-check image metadata
@@ -172,7 +172,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/openclaw-custom:${{ steps.ver.outputs.official_version }}
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/openclaw:${{ steps.ver.outputs.official_version }}
 
       - name: Nothing to build
         if: ${{ steps.decide.outputs.should_build != 'true' }}

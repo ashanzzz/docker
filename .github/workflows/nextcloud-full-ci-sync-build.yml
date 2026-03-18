@@ -123,9 +123,9 @@ jobs:
           build-args: |
             NEXTCLOUD_VERSION=${{ steps.v.outputs.ver }}
           tags: |
-            ghcr.io/ashanzzz/nextcloud-full:${{ steps.v.outputs.ver }}-apache-full
-            ghcr.io/ashanzzz/nextcloud-full:33-apache-full
-            ghcr.io/ashanzzz/nextcloud-full:latest
+            ghcr.io/${{ github.repository_owner }}/nextcloud-full:${{ steps.v.outputs.ver }}-apache-full
+            ghcr.io/${{ github.repository_owner }}/nextcloud-full:33-apache-full
+            ghcr.io/${{ github.repository_owner }}/nextcloud-full:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             io.nextcloud.version=${{ steps.v.outputs.ver }}
