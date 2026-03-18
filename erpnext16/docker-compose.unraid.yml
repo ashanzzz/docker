@@ -1,0 +1,176 @@
+# ERPNext 16 (Unraid) — one *image* pushed by GitHub, run on Unraid without custom shell scripts
+#
+# Design goals:
+# - GitHub Actions builds ONE image: ghcr.io/ashanzzz/erpnext16 (built from official code)
+# - Unraid runs containers from that image; no local build required
+# - AIO experience: includes an optional one-shot create-site job
+#
+# Notes:
+# - This is still a full-stack (multi-container) deployment. "One image" != "one container".
+# - DB/Redis are separate containers (best practice).
+
+services:
+  # One-shot configurator: writes common_site_config.json
+  configurator:
+    image: ${ERP_IMAGE}
+    restart: on-failure
+    entrypoint: ["bash", "-c"]
+    command: >
+      ls -1 apps > sites/apps.txt;
+      bench set-config -g db_host $$DB_HOST;
+      bench set-config -gp db_port $$DB_PORT;
+      bench set-config -g redis_cache "redis://$$REDIS_CACHE";
+      bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
+      bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
+      bench set-config -gp socketio_port $$SOCKETIO_PORT;
+      bench set-config -g chromium_path /usr/bin/chromium-headless-shell;
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      REDIS_CACHE: redis-cache:6379
+      REDIS_QUEUE: redis-queue:6379
+      SOCKETIO_PORT: "9000"
+    depends_on:
+      db:
+        condition: service_healthy
+      - redis-cache
+      - redis-queue
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  # Optional one-shot site bootstrap (idempotent)
+  create-site:
+    image: ${ERP_IMAGE}
+    restart: "no"
+    entrypoint: ["bash", "-c"]
+    command: >
+      wait-for-it -t 300 db:3306;
+      wait-for-it -t 300 redis-cache:6379;
+      wait-for-it -t 300 redis-queue:6379;
+      if [ -d "sites/${SITE_NAME}" ]; then
+        echo "Site already exists: ${SITE_NAME}";
+        exit 0;
+      fi;
+      export start=`date +%s`;
+      until [ -f sites/common_site_config.json ]; do
+        echo "Waiting for sites/common_site_config.json";
+        sleep 3;
+        if (( `date +%s`-start > 180 )); then
+          echo "Timeout waiting for common_site_config.json";
+          exit 1;
+        fi;
+      done;
+      bench new-site --mariadb-user-host-login-scope='%' \
+        --db-root-password "${DB_PASSWORD}" \
+        --admin-password "${ADMIN_PASSWORD}" \
+        --install-app erpnext \
+        --set-default frontend \
+        "${SITE_NAME}";
+      echo "Site created: ${SITE_NAME}";
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  backend:
+    image: ${ERP_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  frontend:
+    image: ${ERP_IMAGE}
+    restart: unless-stopped
+    command: ["nginx-entrypoint.sh"]
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      # If empty, default is host-based resolution.
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER:-$${host}}
+      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-120}
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-50m}
+    ports:
+      - "${HTTP_PUBLISH_PORT:-8080}:8080"
+    depends_on:
+      - backend
+      - websocket
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  websocket:
+    image: ${ERP_IMAGE}
+    restart: unless-stopped
+    command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  queue-short:
+    image: ${ERP_IMAGE}
+    restart: unless-stopped
+    command: ["bench", "worker", "--queue", "short,default"]
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  queue-long:
+    image: ${ERP_IMAGE}
+    restart: unless-stopped
+    command: ["bench", "worker", "--queue", "long,default,short"]
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  scheduler:
+    image: ${ERP_IMAGE}
+    restart: unless-stopped
+    command: ["bench", "schedule"]
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+
+  db:
+    image: mariadb:11.8
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 5s
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MARIADB_AUTO_UPGRADE: 1
+    volumes:
+      - db-data:/var/lib/mysql
+
+  redis-cache:
+    image: redis:6.2-alpine
+    restart: unless-stopped
+
+  redis-queue:
+    image: redis:6.2-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-queue-data:/data
+
+volumes:
+  sites:
+  db-data:
+  redis-queue-data:
