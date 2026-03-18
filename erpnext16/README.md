@@ -14,8 +14,8 @@
 文档：`erpnext16/single-aio/README.md`
 
 镜像：
-- `ghcr.io/<你的GitHub用户名>/erpnext16:single-aio`（滚动最新）
-- `ghcr.io/<你的GitHub用户名>/erpnext16:v16.x.y-single-aio`（固定版本）
+- `ghcr.io/<你的GitHub用户名>/erpnext16:aio`（滚动最新）
+- `ghcr.io/<你的GitHub用户名>/erpnext16:v16.x.y-aio`（固定版本）
 
 > 这是目前最符合你“Unraid 只用 docker run”的方式。
 
