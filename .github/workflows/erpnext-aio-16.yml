@@ -63,7 +63,7 @@ jobs:
           MAJOR="${ERP_MAJOR:-16}"
           PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
 
-          INPUT_VER="${{ inputs.version || '' }}"
+          INPUT_VER="${{ inputs.version }}"
           if [[ -n "$INPUT_VER" ]]; then
             if [[ ! "$INPUT_VER" =~ $PATTERN ]]; then
               echo "::error::Invalid version: $INPUT_VER (expected v${MAJOR}.x.y)" >&2

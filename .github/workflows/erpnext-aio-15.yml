@@ -75,7 +75,7 @@ jobs:
           trim_v() { sed -E 's/^v//'; }
           starts_with_major() { [[ "$1" =~ ^v?${MAJOR}\. ]]; }
 
-          INPUT_VER="${{ inputs.version || '' }}"
+          INPUT_VER="${{ inputs.version }}"
           REF_TYPE="${GITHUB_REF_TYPE:-''}"
           REF_NAME="${GITHUB_REF_NAME:-''}"
 

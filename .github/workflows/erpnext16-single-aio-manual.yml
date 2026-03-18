@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           MAJOR="${ERP_MAJOR:-16}"
           PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
-          INPUT_VER="${{ inputs.version || '' }}"
+          INPUT_VER="${{ inputs.version }}"
           if [[ -n "$INPUT_VER" ]]; then
             [[ "$INPUT_VER" =~ $PATTERN ]] || { echo "::error::invalid version $INPUT_VER"; exit 1; }
             echo "ver_v=$INPUT_VER" >> "$GITHUB_OUTPUT"
