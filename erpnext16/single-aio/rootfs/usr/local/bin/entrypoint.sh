@@ -22,10 +22,28 @@ if [ ! -d /var/lib/mysql/mysql ]; then
   mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
 fi
 
-# Write nginx config via bundled helper if present
-if command -v nginx-entrypoint.sh >/dev/null 2>&1; then
+# Generate nginx config for Frappe (listen 8080; route to local backend/socketio)
+# We intentionally DO NOT call upstream nginx-entrypoint.sh because it would start nginx and block.
+if [ -f /templates/nginx/frappe.conf.template ]; then
   echo "[aio] Generating nginx config..."
-  BACKEND="$BACKEND" SOCKETIO="$SOCKETIO" FRAPPE_SITE_NAME_HEADER="$FRAPPE_SITE_NAME_HEADER" nginx-entrypoint.sh || true
+  : "${UPSTREAM_REAL_IP_ADDRESS:=127.0.0.1}"
+  : "${UPSTREAM_REAL_IP_HEADER:=X-Forwarded-For}"
+  : "${UPSTREAM_REAL_IP_RECURSIVE:=off}"
+  : "${PROXY_READ_TIMEOUT:=120}"
+  : "${CLIENT_MAX_BODY_SIZE:=50m}"
+
+  mkdir -p /etc/nginx/conf.d
+  envsubst '${BACKEND}
+  ${SOCKETIO}
+  ${UPSTREAM_REAL_IP_ADDRESS}
+  ${UPSTREAM_REAL_IP_HEADER}
+  ${UPSTREAM_REAL_IP_RECURSIVE}
+  ${FRAPPE_SITE_NAME_HEADER}
+  ${PROXY_READ_TIMEOUT}
+  ${CLIENT_MAX_BODY_SIZE}' \
+    </templates/nginx/frappe.conf.template >/etc/nginx/conf.d/frappe.conf
+
+  rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 fi
 
 # Start supervisor (only mariadb+redis autostart)
@@ -75,10 +93,9 @@ if [ ! -d "/home/frappe/frappe-bench/sites/${SITE_NAME}" ]; then
   echo "[aio] Creating site: ${SITE_NAME}"
   su - frappe -c "cd /home/frappe/frappe-bench && \
     bench new-site --mariadb-user-host-login-scope='%' \
-      --mariadb-root-password '${MARIADB_ROOT_PASSWORD}' \
+      --db-root-password '${MARIADB_ROOT_PASSWORD}' \
       --admin-password '${ADMIN_PASSWORD}' \
       --install-app erpnext \
-      --set-default frontend \
       '${SITE_NAME}'"
 else
   echo "[aio] Site exists: ${SITE_NAME}"
