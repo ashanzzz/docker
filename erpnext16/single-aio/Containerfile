@@ -1,0 +1,67 @@
+# ERPNext16 single-container AIO
+# - Built from official Frappe/ERPNext code (via frappe/build + bench init)
+# - Runs MariaDB + Redis + ERPNext services inside ONE container (supervisord)
+# - Intended for Unraid "docker run" users who do not want compose.
+#
+# Tradeoffs:
+# - Heavier image and more moving parts in one container
+# - Upgrades require more care (backup volumes first)
+
+ARG FRAPPE_IMAGE_TAG=version-16
+ARG FRAPPE_BRANCH=version-16
+
+FROM frappe/build:${FRAPPE_IMAGE_TAG} AS builder
+
+ARG FRAPPE_BRANCH=version-16
+ARG FRAPPE_PATH=https://github.com/frappe/frappe
+ARG APPS_JSON_BASE64
+
+USER root
+RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
+    mkdir -p /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
+  fi
+
+USER frappe
+RUN export APP_INSTALL_ARGS="" && \
+  if [ -n "${APPS_JSON_BASE64}" ]; then \
+    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
+  fi && \
+  bench init ${APP_INSTALL_ARGS} \
+    --frappe-branch=${FRAPPE_BRANCH} \
+    --frappe-path=${FRAPPE_PATH} \
+    --no-procfile \
+    --no-backups \
+    --skip-redis-config-generation \
+    --verbose \
+    /home/frappe/frappe-bench && \
+  cd /home/frappe/frappe-bench && \
+  echo "{}" > sites/common_site_config.json && \
+  find apps -mindepth 1 -path "*/.git" | xargs rm -fr
+
+FROM frappe/base:${FRAPPE_IMAGE_TAG} AS aio
+
+USER root
+
+# Install services for AIO
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    mariadb-server mariadb-client \
+    redis-server redis-tools \
+    supervisor \
+    nginx \
+    curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy bench from builder stage
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+# AIO rootfs (supervisor configs + entrypoint)
+COPY rootfs/ /
+
+# Persistent data
+VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]
+
+EXPOSE 8080
+
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
