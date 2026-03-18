@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（如 v16.60.0）。留空则自动发现 upstream 最新 v16.x.y"
+        description: "Version tag like v16.60.0 (optional; empty = auto discover latest v16.x.y)"
         required: false
       force_rebuild:
-        description: "强制全量重建（禁用缓存）"
+        description: "Rebuild without cache (true/false)"
         required: false
         default: "false"
 
@@ -18,11 +18,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      ERP_MAJOR: "16"
-
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -39,48 +41,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          MAJOR="${ERP_MAJOR:-16}"
-          PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
           INPUT_VER="${{ inputs.version }}"
           if [[ -n "$INPUT_VER" ]]; then
-            [[ "$INPUT_VER" =~ $PATTERN ]] || { echo "::error::invalid version $INPUT_VER"; exit 1; }
             echo "ver_v=$INPUT_VER" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          VER_V=$(python3 - <<'PY'
-import json, re, urllib.request
-major='16'
-pat=re.compile(rf'^v?{major}\.(\d+)\.(\d+)$')
-url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
-found=[]
-for _ in range(20):
-  req=urllib.request.Request(url, headers={'Accept':'application/json'})
-  with urllib.request.urlopen(req, timeout=30) as r:
-    data=json.load(r)
-  for it in data.get('results', []):
-    name=it.get('name')
-    if not name: continue
-    m=pat.match(name)
-    if m:
-      found.append((int(m.group(1)), int(m.group(2)), name if name.startswith('v') else 'v'+name))
-  url=data.get('next')
-  if not url: break
-if not found:
-  raise SystemExit(1)
-found.sort()
-print(found[-1][2])
-PY
-          )
+
+          MAJOR=16
+          PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
+          url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
+          tmp=$(mktemp)
+          : > "$tmp"
+          for _ in $(seq 1 20); do
+            json=$(curl -fsSL "$url")
+            echo "$json" | jq -r '.results[].name' | grep -E "$PATTERN" | sed -E 's/^v/v/' >> "$tmp" || true
+            url=$(echo "$json" | jq -r '.next // empty')
+            [[ -z "$url" || "$url" == "null" ]] && break
+          done
+          VER_V=$(sort -V "$tmp" | tail -n1 || true)
+          rm -f "$tmp"
+          if [[ -z "$VER_V" ]]; then
+            echo "::error::failed to discover upstream version" >&2
+            exit 1
+          fi
+          [[ "$VER_V" == v* ]] || VER_V="v$VER_V"
           echo "ver_v=$VER_V" >> "$GITHUB_OUTPUT"
 
-      - name: Build apps.json base64 (pin erpnext to discovered tag)
+      - name: Build APPS_JSON_BASE64 (pin erpnext app to upstream tag)
         id: apps
         shell: bash
         run: |
           set -euo pipefail
           VER_V="${{ steps.upstream.outputs.ver_v }}"
-          jq --arg ver "$VER_V" 'map(if (.url|test("frappe/erpnext$")) then .branch=$ver else . end)' erpnext16/image/apps.json > /tmp/apps.json
-          echo "apps_json_base64=$(base64 -w 0 /tmp/apps.json)" >> "$GITHUB_OUTPUT"
+          APPS_JSON_BASE64=$(jq --arg ver "$VER_V" 'map(if (.url|endswith("/erpnext")) then .branch=$ver else . end)' erpnext16/image/apps.json \
+            | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
+          echo "apps_json_base64=$APPS_JSON_BASE64" >> "$GITHUB_OUTPUT"
 
       - name: Build & Push (GHCR)
         uses: docker/build-push-action@v6

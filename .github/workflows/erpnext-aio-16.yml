@@ -1,47 +1,39 @@
 name: Build ERPNext16 image (single image, build from official code)
 
 on:
-  pull_request: {}
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（如 v16.60.0）。留空则自动发现 upstream 最新 v16.x.y"
+        description: "Version tag like v16.60.0 (optional; empty = auto discover latest v16.x.y)"
         required: false
       force_rebuild:
-        description: "强制全量重建（禁用缓存）"
-        type: boolean
-        default: false
-      push_git_tag:
-        description: "构建成功后回推 Git tag（v16.x.y）"
-        type: boolean
-        default: true
+        description: "Rebuild without cache (true/false)"
+        required: false
+        default: "false"
   schedule:
-    # 每天检查一次上游 v16.x.y 是否更新（UTC）
-    - cron: "23 2 * * *"
+    - cron: "23 2 * * *" # daily (UTC)
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 concurrency:
-  group: erpnext16-build-${{ github.ref }}
+  group: erpnext16-image-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      ERP_MAJOR: "16"
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login GHCR
         uses: docker/login-action@v3
@@ -50,120 +42,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install jq & curl deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
-
       - name: Discover upstream ERPNext v16.x.y
         id: upstream
         shell: bash
         run: |
           set -euo pipefail
-          MAJOR="${ERP_MAJOR:-16}"
-          PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
-
           INPUT_VER="${{ inputs.version }}"
           if [[ -n "$INPUT_VER" ]]; then
-            if [[ ! "$INPUT_VER" =~ $PATTERN ]]; then
-              echo "::error::Invalid version: $INPUT_VER (expected v${MAJOR}.x.y)" >&2
-              exit 1
-            fi
-            VER_V="$INPUT_VER"
-          else
-            # Prefer Docker Hub tags for frappe/erpnext (ensures image exists)
-            VER_V=$(python3 - <<'PY'
-import json, re, urllib.request
-major='16'
-pat=re.compile(rf'^v?{major}\.(\d+)\.(\d+)$')
-url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
-found=[]
-for _ in range(20):
-  req=urllib.request.Request(url, headers={'Accept':'application/json'})
-  with urllib.request.urlopen(req, timeout=30) as r:
-    data=json.load(r)
-  for it in data.get('results', []):
-    name=it.get('name')
-    if not name: continue
-    m=pat.match(name)
-    if m:
-      found.append((int(m.group(1)), int(m.group(2)), name if name.startswith('v') else 'v'+name))
-  url=data.get('next')
-  if not url: break
-if not found:
-  raise SystemExit(1)
-found.sort()
-print(found[-1][2])
-PY
-            )
+            echo "ver_v=$INPUT_VER" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          MAJOR=16
+          PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
+          url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
+          tmp=$(mktemp)
+          : > "$tmp"
+          for _ in $(seq 1 20); do
+            json=$(curl -fsSL "$url")
+            echo "$json" | jq -r '.results[].name' | grep -E "$PATTERN" >> "$tmp" || true
+            url=$(echo "$json" | jq -r '.next // empty')
+            [[ -z "$url" || "$url" == "null" ]] && break
+          done
+          VER_V=$(sort -V "$tmp" | tail -n1 || true)
+          rm -f "$tmp"
+          [[ -n "$VER_V" ]] || { echo "::error::discover version failed"; exit 1; }
+          [[ "$VER_V" == v* ]] || VER_V="v$VER_V"
           echo "ver_v=$VER_V" >> "$GITHUB_OUTPUT"
-          echo "Discovered: $VER_V"
 
-      - name: Derive image tags
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext16"
-          VER_V="${{ steps.upstream.outputs.ver_v }}"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "version_with_v=$VER_V" >> "$GITHUB_OUTPUT"
-          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$IMAGE:$VER_V" >> "$GITHUB_OUTPUT"
-          echo "$IMAGE:v16" >> "$GITHUB_OUTPUT"
-          echo "$IMAGE:version-16" >> "$GITHUB_OUTPUT"
-          echo "$IMAGE:latest" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Render apps.json (pin erpnext to discovered tag)
+      - name: Build APPS_JSON_BASE64 (pin erpnext app to upstream tag)
         id: apps
         shell: bash
         run: |
           set -euo pipefail
-          VER_V="${{ steps.meta.outputs.version_with_v }}"
-          SRC="erpnext16/image/apps.json"
-          if [[ ! -f "$SRC" ]]; then
-            echo "::error::Missing $SRC" >&2
-            exit 2
-          fi
-          jq --arg ver "$VER_V" 'map(if (.url|test("frappe/erpnext$")) then .branch=$ver else . end)' "$SRC" > /tmp/apps.json
-          APPS_JSON_BASE64=$(base64 -w 0 /tmp/apps.json)
+          VER_V="${{ steps.upstream.outputs.ver_v }}"
+          APPS_JSON_BASE64=$(jq --arg ver "$VER_V" 'map(if (.url|endswith("/erpnext")) then .branch=$ver else . end)' erpnext16/image/apps.json \
+            | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
           echo "apps_json_base64=$APPS_JSON_BASE64" >> "$GITHUB_OUTPUT"
 
-      - name: Bump version file & commit (non-PR only)
-        if: ${{ github.event_name != 'pull_request' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER_V="${{ steps.meta.outputs.version_with_v }}"
-          echo "$VER_V" > erpnext16/image/UPSTREAM_ERPNext_VERSION
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet; then
-            git add erpnext16/image/UPSTREAM_ERPNext_VERSION
-            git commit -m "chore(erpnext16): bump upstream to $VER_V" || true
-            git push || true
-          fi
-
-      - name: Build (PR: no push)
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: ./erpnext16/image
-          file: ./erpnext16/image/Containerfile
-          push: false
-          platforms: linux/amd64
-          no-cache: ${{ inputs.force_rebuild == true }}
-          build-args: |
-            FRAPPE_IMAGE_TAG=version-16
-            FRAPPE_BRANCH=${{ steps.meta.outputs.version_with_v }}
-            FRAPPE_PATH=https://github.com/frappe/frappe
-            APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
-
       - name: Build & Push (GHCR)
-        if: ${{ github.event_name != 'pull_request' }}
         uses: docker/build-push-action@v6
         with:
           context: ./erpnext16/image
@@ -171,34 +88,14 @@ PY
           push: true
           platforms: linux/amd64
           pull: true
-          no-cache: ${{ inputs.force_rebuild == true }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            io.erpnext.version=${{ steps.meta.outputs.version_with_v }}
-
-      - name: Smoke test (bench --version)
-        if: ${{ github.event_name != 'pull_request' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE="${{ steps.meta.outputs.image }}"
-          VER_V="${{ steps.meta.outputs.version_with_v }}"
-          docker pull "$IMAGE:$VER_V"
-          docker run --rm --entrypoint bash "$IMAGE:$VER_V" -lc 'bench --version && python3 -V'
-
-      - name: Create & push git tag (optional)
-        if: ${{ github.event_name != 'pull_request' && inputs.push_git_tag == true && github.ref_type != 'tag' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER_V="${{ steps.meta.outputs.version_with_v }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "$VER_V" >/dev/null 2>&1; then
-            echo "Tag exists: $VER_V"
-            exit 0
-          fi
-          git tag -a "$VER_V" -m "Release $VER_V"
-          git push origin "$VER_V"
+          no-cache: ${{ inputs.force_rebuild == 'true' }}
+          build-args: |
+            FRAPPE_IMAGE_TAG=version-16
+            FRAPPE_BRANCH=${{ steps.upstream.outputs.ver_v }}
+            FRAPPE_PATH=https://github.com/frappe/frappe
+            APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.upstream.outputs.ver_v }}
+            ghcr.io/${{ github.repository_owner }}/erpnext16:v16
+            ghcr.io/${{ github.repository_owner }}/erpnext16:version-16
+            ghcr.io/${{ github.repository_owner }}/erpnext16:latest
