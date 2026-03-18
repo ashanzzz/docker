@@ -51,6 +51,37 @@ fi
 /usr/bin/supervisord -c /etc/supervisor/supervisord.conf &
 SUP_PID=$!
 
+SITES_DIR=/home/frappe/frappe-bench/sites
+
+# When users mount an empty volume to /home/frappe/frappe-bench/sites,
+# the image-provided metadata files (apps.txt/apps.json/common_site_config.json)
+# are hidden and bench will crash. Bootstrap minimal required files.
+if [ ! -f "${SITES_DIR}/apps.txt" ]; then
+  echo "[aio] Bootstrapping sites/apps.txt..."
+  cat >"${SITES_DIR}/apps.txt" <<'EOF'
+frappe
+erpnext
+EOF
+  chown frappe:frappe "${SITES_DIR}/apps.txt" || true
+fi
+
+if [ ! -f "${SITES_DIR}/apps.json" ]; then
+  echo "[aio] Bootstrapping sites/apps.json..."
+  cat >"${SITES_DIR}/apps.json" <<'EOF'
+[
+  {"url":"https://github.com/frappe/frappe","branch":"version-16"},
+  {"url":"https://github.com/frappe/erpnext","branch":"version-16"}
+]
+EOF
+  chown frappe:frappe "${SITES_DIR}/apps.json" || true
+fi
+
+if [ ! -f "${SITES_DIR}/common_site_config.json" ]; then
+  echo "[aio] Bootstrapping sites/common_site_config.json..."
+  echo '{}' >"${SITES_DIR}/common_site_config.json"
+  chown frappe:frappe "${SITES_DIR}/common_site_config.json" || true
+fi
+
 cleanup() {
   echo "[aio] Caught signal, stopping supervisord..."
   kill -TERM "$SUP_PID" 2>/dev/null || true
@@ -73,7 +104,17 @@ done
 # Ensure root password / remote root exists (best-effort)
 # We connect via unix socket as root.
 echo "[aio] Ensuring MariaDB root password..."
-mariadb --socket=/run/mysqld/mysqld.sock -uroot <<SQL || true
+# Try socket auth (fresh install), then try with password (when reusing volumes)
+if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -e 'SELECT 1' >/dev/null 2>&1; then
+  ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
+elif mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}" -e 'SELECT 1' >/dev/null 2>&1; then
+  ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
+else
+  echo "[aio] ERROR: cannot connect to MariaDB as root (socket)" >&2
+  exit 1
+fi
+
+"${ROOT_AUTH[@]}" <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}';
 CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
