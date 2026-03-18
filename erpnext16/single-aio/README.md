@@ -3,8 +3,8 @@
 你明确要求：**单容器**、Unraid 侧只用 `docker run`。
 
 本目录会构建并推送镜像：
-- `ghcr.io/ashanzzz/erpnext16:single-aio`
-- `ghcr.io/ashanzzz/erpnext16:v16.x.y-single-aio`
+- `ghcr.io/ashanzzz/erpnext16:aio`
+- `ghcr.io/ashanzzz/erpnext16:v16.x.y-aio`
 
 ## 运行示例（Unraid）
 
@@ -18,7 +18,7 @@ docker run -d --name erpnext16 \
   -v /mnt/user/appdata/erpnext16/sites:/home/frappe/frappe-bench/sites \
   -v /mnt/user/appdata/erpnext16/mysql:/var/lib/mysql \
   -v /mnt/user/appdata/erpnext16/redis:/var/lib/redis \
-  ghcr.io/ashanzzz/erpnext16:single-aio
+  ghcr.io/ashanzzz/erpnext16:aio
 ```
 
 访问：`http://<unraid-ip>:8080`
