@@ -8,8 +8,8 @@ on:
         required: false
       force_rebuild:
         description: "强制全量重建（禁用缓存）"
-        type: boolean
-        default: false
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -90,7 +90,7 @@ PY
           push: true
           platforms: linux/amd64
           pull: true
-          no-cache: ${{ inputs.force_rebuild == true }}
+          no-cache: ${{ inputs.force_rebuild == 'true' }}
           build-args: |
             FRAPPE_IMAGE_TAG=version-16
             FRAPPE_BRANCH=${{ steps.upstream.outputs.ver_v }}
