@@ -1,0 +1,71 @@
+# Vendor from: https://github.com/frappe/frappe_docker/blob/main/images/layered/Containerfile
+# Purpose: build a custom ERPNext/Frappe image with extra apps baked in.
+#
+# Build args:
+#   FRAPPE_BRANCH=version-16
+#   FRAPPE_PATH=https://github.com/frappe/frappe
+#   APPS_JSON_BASE64=<base64 of apps.json>
+
+# NOTE: separate the *runtime/build image tag* from the *Frappe git ref*.
+# - FRAPPE_IMAGE_TAG: controls the base images we build FROM (should be version-16; stable and exists on Docker Hub)
+# - FRAPPE_BRANCH:    controls which Frappe git ref bench init checks out (can be version-16 or a fixed tag like v16.60.0)
+ARG FRAPPE_IMAGE_TAG=version-16
+ARG FRAPPE_BRANCH=version-16
+
+FROM frappe/build:${FRAPPE_IMAGE_TAG} AS builder
+
+ARG FRAPPE_IMAGE_TAG=version-16
+ARG FRAPPE_BRANCH=version-16
+ARG FRAPPE_PATH=https://github.com/frappe/frappe
+ARG APPS_JSON_BASE64
+
+USER root
+
+RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
+    mkdir /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
+  fi
+
+USER frappe
+
+RUN export APP_INSTALL_ARGS="" && \
+  if [ -n "${APPS_JSON_BASE64}" ]; then \
+    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
+  fi && \
+  bench init ${APP_INSTALL_ARGS}\
+    --frappe-branch=${FRAPPE_BRANCH} \
+    --frappe-path=${FRAPPE_PATH} \
+    --no-procfile \
+    --no-backups \
+    --skip-redis-config-generation \
+    --verbose \
+    /home/frappe/frappe-bench && \
+  cd /home/frappe/frappe-bench && \
+  echo "{}" > sites/common_site_config.json && \
+  find apps -mindepth 1 -path "*/.git" | xargs rm -fr
+
+FROM frappe/base:${FRAPPE_IMAGE_TAG} AS backend
+
+USER frappe
+
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+WORKDIR /home/frappe/frappe-bench
+
+VOLUME [ \
+  "/home/frappe/frappe-bench/sites", \
+  "/home/frappe/frappe-bench/sites/assets", \
+  "/home/frappe/frappe-bench/logs" \
+]
+
+CMD [ \
+  "/home/frappe/frappe-bench/env/bin/gunicorn", \
+  "--chdir=/home/frappe/frappe-bench/sites", \
+  "--bind=0.0.0.0:8000", \
+  "--threads=4", \
+  "--workers=2", \
+  "--worker-class=gthread", \
+  "--worker-tmp-dir=/dev/shm", \
+  "--timeout=120", \
+  "--preload", \
+  "frappe.app:application" \
+]

@@ -3,6 +3,11 @@
 目标：在 **Unraid / Linux** 上用一条脚本完成“可用且偏生产”的 Nextcloud 部署，并尽量把易踩坑的配置（反代、Redis 文件锁、Cron、预览、Office）自动化。
 
 > 说明：本目录提供 **部署脚本 + docker-compose**（不是自建 Nextcloud 镜像）。
+>
+> 如果你需要 Recognize/预览/视频处理等依赖（ffmpeg / tensorflow 等），本仓库也内置了派生镜像工程：
+> - `nextcloud/image-full/`（原 `nextcloud-full/`，已合并进同一目录下）
+> - 默认推送镜像：`ghcr.io/ashanzzz/nextcloud-full:33-apache-full`
+> - 你只要在 `.env` 里把 Nextcloud 镜像改成该 tag，即可“部署栈不变、镜像增强”。
 
 ## Features（默认启用）
 

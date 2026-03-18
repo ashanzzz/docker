@@ -30,14 +30,14 @@ jobs:
 
       - name: Read version
         id: v
-        run: echo "ver=$(cat nextcloud-full/NEXTCLOUD_VERSION | tr -d '\r\n')" >> "$GITHUB_OUTPUT"
+        run: echo "ver=$(cat nextcloud/image-full/NEXTCLOUD_VERSION | tr -d '\r\n')" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
       - name: Build (no push)
         uses: docker/build-push-action@v6
         with:
-          context: ./nextcloud-full
+          context: ./nextcloud/image-full
           push: false
           platforms: linux/amd64
           build-args: |
@@ -68,7 +68,7 @@ jobs:
       - name: Compare versions
         id: diff
         run: |
-          CURRENT="$(cat nextcloud-full/NEXTCLOUD_VERSION | tr -d '\r\n')"
+          CURRENT="$(cat nextcloud/image-full/NEXTCLOUD_VERSION | tr -d '\r\n')"
           UPSTREAM="${{ steps.upstream.outputs.version }}"
           FORCE="${{ inputs.force }}"
           if [ "$FORCE" = "true" ]; then
@@ -83,14 +83,14 @@ jobs:
 
       - name: Update NEXTCLOUD_VERSION (if changed)
         if: steps.diff.outputs.changed == 'true'
-        run: echo "${{ steps.upstream.outputs.version }}" > nextcloud-full/NEXTCLOUD_VERSION
+        run: echo "${{ steps.upstream.outputs.version }}" > nextcloud/image-full/NEXTCLOUD_VERSION
 
       - name: Commit & push version bump (if changed)
         if: steps.diff.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nextcloud-full/NEXTCLOUD_VERSION
+          git add nextcloud/image-full/NEXTCLOUD_VERSION
 
           if git diff --cached --quiet; then
             echo "No version change to commit (force build / already up-to-date)."
@@ -102,7 +102,7 @@ jobs:
 
       - name: Read repo version
         id: v
-        run: echo "ver=$(cat nextcloud-full/NEXTCLOUD_VERSION | tr -d '\r\n')" >> "$GITHUB_OUTPUT"
+        run: echo "ver=$(cat nextcloud/image-full/NEXTCLOUD_VERSION | tr -d '\r\n')" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -117,7 +117,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./nextcloud-full
+          context: ./nextcloud/image-full
           push: true
           platforms: linux/amd64
           build-args: |
@@ -149,5 +149,5 @@ jobs:
           name: nextcloud-full v${{ steps.v.outputs.ver }}
           body: |
             Derived from official nextcloud:${{ steps.v.outputs.ver }}-apache.
-            Added apt packages (nextcloud-full/packages.txt):
-            $(cat nextcloud-full/packages.txt)
+            Added apt packages (nextcloud/image-full/packages.txt):
+            $(cat nextcloud/image-full/packages.txt)

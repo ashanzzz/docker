@@ -1,0 +1,5 @@
+# Vendor from: https://github.com/frappe/frappe_docker/blob/main/overrides/compose.noproxy.yaml
+services:
+  frontend:
+    ports:
+      - ${HTTP_PUBLISH_PORT:-8080}:8080
