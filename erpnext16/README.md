@@ -5,7 +5,7 @@
 - **单容器 AIO**：一个容器内包含 **MariaDB + Redis + ERPNext 全套进程 + Nginx**
 - **GitHub Actions 从官方代码自动构建并推送 GHCR**
 - Unraid 侧只需要 `docker run`（或 Unraid Docker UI 模板）
-- 对外端口：**8080**
+- 容器内端口：**8080**（对外端口由 `-p <HOST_PORT>:8080` 决定；你想映射成 6XXX 或其它端口都可以，只要不冲突）
 
 ---
 
