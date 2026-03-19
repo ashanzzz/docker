@@ -13,6 +13,10 @@ set -euo pipefail
 : "${BACKEND:=127.0.0.1:8000}"
 : "${SOCKETIO:=127.0.0.1:9000}"
 
+# envsubst only reads *exported* environment variables
+export SITE_NAME ADMIN_PASSWORD MARIADB_ROOT_PASSWORD MARIADB_USER_HOST_LOGIN_SCOPE
+export FRAPPE_SITE_NAME_HEADER BACKEND SOCKETIO
+
 mkdir -p /run/mysqld /var/lib/redis /var/log/supervisor
 chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
 chown -R redis:redis /var/lib/redis || true
@@ -64,6 +68,8 @@ if [ -f /templates/nginx/frappe.conf.template ]; then
   : "${UPSTREAM_REAL_IP_RECURSIVE:=off}"
   : "${PROXY_READ_TIMEOUT:=120}"
   : "${CLIENT_MAX_BODY_SIZE:=50m}"
+
+  export UPSTREAM_REAL_IP_ADDRESS UPSTREAM_REAL_IP_HEADER UPSTREAM_REAL_IP_RECURSIVE PROXY_READ_TIMEOUT CLIENT_MAX_BODY_SIZE
 
   mkdir -p /etc/nginx/conf.d
   envsubst '${BACKEND}
