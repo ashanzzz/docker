@@ -1,23 +1,19 @@
-# ERPNext16 standard image
+# ERPNext16 image inputs
 
-这个目录构建的是 **标准 ERPNext 16 镜像**，不是单容器 AIO。
+这个目录现在只作为 **AIO 构建依赖** 保留。
 
-它的用途主要有三种：
-- 给多容器部署复用同一个 ERPNext 镜像
-- 在镜像里预烘焙官方 apps
-- 作为后续衍生方案的基础镜像
+它不再代表一个独立部署方案，也不是仓库对外推荐的单独镜像入口。
 
-如果你要的是“Unraid 上只跑一个容器”，请直接看：
+如果你要实际部署，请直接看：
 - `erpnext16/single-aio/README.md`
 
 ---
 
 ## 这个目录里有什么
 
-- `Containerfile`：标准镜像构建定义
-- `build.sh`：本地构建脚本
-- `apps.json`：当前实际使用的 app 列表
+- `apps.json`：AIO 构建时实际使用的 app 列表
 - `apps.json.example`：可直接复制修改的示例
+- `build.sh` / `Containerfile`：保留下来的构建辅助文件，主要供本地调试或后续维护参考
 
 ---
 
@@ -37,7 +33,20 @@
 
 ---
 
-## 本地构建
+## 和 AIO workflow 的关系
+
+当前仓库只保留：
+- `.github/workflows/erpnext16-single-container-aio.yml`
+
+这条 workflow 会：
+- 读取 `erpnext16/image/apps.json`
+- 把 ERPNext app pin 到上游精确 tag
+- 校验 `frappe/frappe` 是否存在同名 tag
+- 最终构建并发布 AIO 镜像
+
+---
+
+## 本地构建（仅供调试）
 
 最简单：
 
@@ -111,33 +120,11 @@ bash build.sh
 
 ---
 
-## tag 规则
+## 当前对外发布的 tag
 
-### 标准镜像
+现在对外发布只看 AIO：
 
-- 滚动：`ghcr.io/ashanzzz/erpnext16:latest`
-- 固定：`ghcr.io/ashanzzz/erpnext16:v16.x.y`
-
-### 自定义镜像
-
-- `ghcr.io/ashanzzz/erpnext16:v16-custom`
-- `ghcr.io/ashanzzz/erpnext16:v16-hrms`
+- `ghcr.io/ashanzzz/erpnext16:aio`
+- `ghcr.io/ashanzzz/erpnext16:v16.x.y-aio`
 
 如果是生产环境，优先用固定 tag。
-
----
-
-## 和 AIO 的区别
-
-这个目录构建的是标准镜像。
-
-它适合：
-- 多容器部署
-- 自定义官方 apps
-- 作为别的部署方案基础镜像
-
-它不负责：
-- 单容器内置 MariaDB + Redis + Nginx 的 AIO 运行方式
-
-那个在：
-- `erpnext16/single-aio/`

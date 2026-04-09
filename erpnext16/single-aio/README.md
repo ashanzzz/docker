@@ -35,7 +35,8 @@ docker run -d --name erpnext16 \
 ### 重要提示
 
 - **不要**额外挂载覆盖 `/etc/supervisor/supervisord.conf`（否则会覆盖镜像内的修复，导致行为不一致）。
-- 这个镜像是 AIO 变体，不是官方默认多服务生产拓扑。要回到标准多容器路线，请看 `erpnext16/README.md` 和 `erpnext16/DOCKER_RUN.md`。
+- 这个仓库现在已经锁定成 AIO-only。`erpnext16/` 下不再维护多容器运行入口。
+- `erpnext16/image/` 仍然保留，但它只是 AIO 构建时使用的 app 清单和构建辅助目录，不是独立部署入口。
 
 ## 升级
 
