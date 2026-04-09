@@ -4,17 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag like v16.60.0 (optional; empty = auto discover latest v16.x.y)"
+        description: "Version tag like v16.13.1 (optional; empty = compare local tracked version with official latest v16.x.y)"
         required: false
+      apps_json_path:
+        description: "Path to apps.json used as AIO build input"
+        required: false
+        default: "erpnext16/image/apps.json"
       force_rebuild:
         description: "Rebuild without cache (true/false)"
         required: false
         default: "false"
   schedule:
-    - cron: "41 2 * * *" # daily (UTC)
+    - cron: "41 2 * * *"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -26,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install jq
         run: |
@@ -42,50 +48,119 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Discover upstream ERPNext v16.x.y
-        id: upstream
+      - name: Resolve official ERPNext v16.x.y
+        id: official
         shell: bash
         run: |
           set -euo pipefail
           INPUT_VER="${{ github.event.inputs.version }}"
           if [[ -n "$INPUT_VER" ]]; then
-            echo "ver_v=$INPUT_VER" >> "$GITHUB_OUTPUT"
+            VER_V="$INPUT_VER"
+          else
+            MAJOR=16
+            PATTERN="^v?${MAJOR}\.[0-9]+\.[0-9]+$"
+            url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
+            tmp=$(mktemp)
+            : > "$tmp"
+            for _ in $(seq 1 20); do
+              json=$(curl -fsSL "$url")
+              echo "$json" | jq -r '.results[].name' | grep -E "$PATTERN" >> "$tmp" || true
+              url=$(echo "$json" | jq -r '.next // empty')
+              [[ -z "$url" || "$url" == "null" ]] && break
+            done
+            VER_V=$(sort -V "$tmp" | tail -n1 || true)
+            rm -f "$tmp"
+            [[ -n "$VER_V" ]] || { echo "::error::discover version failed"; exit 1; }
+          fi
+          [[ "$VER_V" == v* ]] || VER_V="v$VER_V"
+          echo "version=$VER_V" >> "$GITHUB_OUTPUT"
+
+      - name: Compare and update ERPNEXT_VERSION
+        id: syncver
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="erpnext16/ERPNEXT_VERSION"
+          OFFICIAL="${{ steps.official.outputs.version }}"
+          CURRENT=""
+          if [[ -f "$TARGET" ]]; then
+            CURRENT=$(tr -d '\r\n' < "$TARGET")
+          fi
+          if [[ "$CURRENT" != "$OFFICIAL" ]]; then
+            printf '%s\n' "$OFFICIAL" > "$TARGET"
+            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$OFFICIAL" >> "$GITHUB_OUTPUT"
+
+      - name: Commit ERPNEXT_VERSION bump
+        if: ${{ steps.syncver.outputs.version_changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add erpnext16/ERPNEXT_VERSION
+          if git diff --cached --quiet; then
             exit 0
           fi
+          git commit -m "chore(erpnext16): bump tracked version to ${{ steps.syncver.outputs.version }}"
+          git push
 
-          MAJOR=16
-          PATTERN="^v?${MAJOR}\\.[0-9]+\\.[0-9]+$"
-          url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
-          tmp=$(mktemp)
-          : > "$tmp"
-          for _ in $(seq 1 20); do
-            json=$(curl -fsSL "$url")
-            echo "$json" | jq -r '.results[].name' | grep -E "$PATTERN" >> "$tmp" || true
-            url=$(echo "$json" | jq -r '.next // empty')
-            [[ -z "$url" || "$url" == "null" ]] && break
-          done
-          VER_V=$(sort -V "$tmp" | tail -n1 || true)
-          rm -f "$tmp"
-          [[ -n "$VER_V" ]] || { echo "::error::discover version failed"; exit 1; }
-          [[ "$VER_V" == v* ]] || VER_V="v$VER_V"
-          echo "ver_v=$VER_V" >> "$GITHUB_OUTPUT"
+      - name: Decide whether build is needed
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.syncver.outputs.version }}"
+          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ steps.syncver.outputs.version_changed }}" == "true" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_PATH="${OWNER_LC}/erpnext16"
+          GHCR_PULL_TOKEN=$(curl -sS "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" | jq -r '.token // empty' || true)
+          if [[ -z "$GHCR_PULL_TOKEN" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TAGS_JSON=$(curl -sS -H "Authorization: Bearer ${GHCR_PULL_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
+          if [[ -n "$TAGS_JSON" ]] && echo "$TAGS_JSON" | jq -e --arg v "${VERSION}-aio" '.tags // [] | index($v) != null' >/dev/null; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Build APPS_JSON_BASE64 (pin erpnext app to upstream tag)
+      - name: Build APPS_JSON_BASE64 (pin erpnext app for AIO build)
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         id: apps
         shell: bash
         run: |
           set -euo pipefail
-          VER_V="${{ steps.upstream.outputs.ver_v }}"
-          APPS_JSON_BASE64=$(jq --arg ver "$VER_V" 'map(if (.url|endswith("/erpnext")) then .branch=$ver else . end)' erpnext16/image/apps.json \
-            | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
+          VER_V="${{ steps.syncver.outputs.version }}"
+          APPS_JSON_PATH="${{ github.event.inputs.apps_json_path }}"
+          if [[ -z "$APPS_JSON_PATH" ]]; then
+            APPS_JSON_PATH="erpnext16/image/apps.json"
+          fi
+          if [[ ! -f "$APPS_JSON_PATH" ]]; then
+            echo "::error::apps.json not found: $APPS_JSON_PATH"
+            exit 2
+          fi
+          APPS_JSON_BASE64=$(jq --arg ver "$VER_V" 'map(if (.url|endswith("/erpnext")) then .branch=$ver else . end)' "$APPS_JSON_PATH" | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
           echo "apps_json_base64=$APPS_JSON_BASE64" >> "$GITHUB_OUTPUT"
 
       - name: Resolve exact Frappe ref
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         id: frappe_ref
         shell: bash
         run: |
           set -euo pipefail
-          ERPNEXT_REF="${{ steps.upstream.outputs.ver_v }}"
+          ERPNEXT_REF="${{ steps.syncver.outputs.version }}"
           FRAPPE_REF="$ERPNEXT_REF"
           if git ls-remote --exit-code --tags https://github.com/frappe/frappe "refs/tags/${FRAPPE_REF}" >/dev/null 2>&1; then
             echo "frappe_ref=$FRAPPE_REF" >> "$GITHUB_OUTPUT"
@@ -95,6 +170,7 @@ jobs:
           exit 1
 
       - name: Build & Push (GHCR)
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: ./erpnext16/single-aio
@@ -110,8 +186,14 @@ jobs:
             APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/erpnext16:aio
-            ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.upstream.outputs.ver_v }}-aio
+            ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
 
       - name: Smoke-check image metadata
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
         run: |
-          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.upstream.outputs.ver_v }}-aio
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
+
+      - name: Nothing to build
+        if: ${{ steps.decide.outputs.should_build != 'true' }}
+        run: |
+          echo "No build needed. Local tracked ERPNext version already matches official version and AIO tag exists."
