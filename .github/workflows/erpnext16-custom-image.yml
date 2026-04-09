@@ -66,3 +66,7 @@ jobs:
             FRAPPE_BRANCH=${{ inputs.frappe_branch }}
             FRAPPE_PATH=https://github.com/frappe/frappe
             APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
+
+      - name: Smoke-check image metadata
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/erpnext16:${{ inputs.tag }}

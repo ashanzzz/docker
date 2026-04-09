@@ -1,4 +1,4 @@
-name: Build ERPNext16 image (single image, build from official code)
+name: Build ERPNext16 standard image
 
 on:
   workflow_dispatch:
@@ -80,6 +80,20 @@ jobs:
             | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
           echo "apps_json_base64=$APPS_JSON_BASE64" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve exact Frappe ref
+        id: frappe_ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          ERPNEXT_REF="${{ steps.upstream.outputs.ver_v }}"
+          FRAPPE_REF="$ERPNEXT_REF"
+          if git ls-remote --exit-code --tags https://github.com/frappe/frappe "refs/tags/${FRAPPE_REF}" >/dev/null 2>&1; then
+            echo "frappe_ref=$FRAPPE_REF" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::Exact Frappe tag not found for ${FRAPPE_REF}. Refusing to fall back to version-16 branch."
+          exit 1
+
       - name: Build & Push (GHCR)
         uses: docker/build-push-action@v6
         with:
@@ -91,9 +105,13 @@ jobs:
           no-cache: ${{ inputs.force_rebuild == 'true' }}
           build-args: |
             FRAPPE_IMAGE_TAG=version-16
-            FRAPPE_BRANCH=version-16
+            FRAPPE_BRANCH=${{ steps.frappe_ref.outputs.frappe_ref }}
             FRAPPE_PATH=https://github.com/frappe/frappe
             APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.upstream.outputs.ver_v }}
             ghcr.io/${{ github.repository_owner }}/erpnext16:latest
+
+      - name: Smoke-check image metadata
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.upstream.outputs.ver_v }}
