@@ -25,11 +25,15 @@
 export ERP_IMAGE="ghcr.io/ashanzzz/erpnext16:latest"
 ```
 
-也可以 pin 版本：
+生产更建议 pin 版本：
 
 ```bash
 export ERP_IMAGE="ghcr.io/ashanzzz/erpnext16:v16.x.y"
 ```
+
+说明：
+- `latest` 是标准镜像的滚动 tag
+- 如果你要单容器 AIO，不要用这里的多容器命令，直接看 `erpnext16/single-aio/README.md`
 
 ### 0.2 站点与密码
 
@@ -197,11 +201,31 @@ docker run -d --name erpnext16-frontend \
 
 ## 5) 升级
 
+### 升级前
+
+- 先备份 `erpnext16_sites`、`erpnext16_db`、`erpnext16_redis_queue`
+- 如果你用的是 bind mount，就备份对应宿主机目录
+- 记录当前镜像 tag，方便回滚
+
+### 升级步骤
+
 ```bash
 docker pull "$ERP_IMAGE"
 # 逐个 restart ERPNext 相关容器即可（不涉及删除权限）
 docker restart erpnext16-backend erpnext16-websocket erpnext16-worker erpnext16-scheduler erpnext16-frontend
 ```
+
+如果这次升级跨了明确发布版本，建议在升级后检查一次站点迁移状态，不要只看容器有没有起来。
+
+### 回滚
+
+如果升级后有异常：
+
+1. 把 `ERP_IMAGE` 改回旧 tag
+2. 重启 ERPNext 相关容器
+3. 如果站点数据已经被新版本写入并不兼容，再恢复升级前备份的数据卷
+
+不建议长期只依赖 `latest` 做生产升级。
 
 ---
 
