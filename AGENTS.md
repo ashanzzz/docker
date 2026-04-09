@@ -51,9 +51,10 @@
 ### 3.1 `erpnext16/`
 
 - 这是版本绑定目录，不要随便改名
-- 有两条线：
-  - `image/`：多容器或通用镜像构建
+- 当前仓库已经锁定为 AIO-only
+- 运行入口只有：
   - `single-aio/`：单容器 AIO
+- `image/` 仍然保留，但它只是 AIO 构建依赖目录，主要提供 `apps.json`
 - 当前命名习惯：
   - 镜像仓库名保留 `erpnext16`
   - AIO 用 tag 后缀区分：`aio` / `v16.x.y-aio`
@@ -62,17 +63,7 @@
   - `frappe/erpnext` `version-16`
   - `frappe/frappe` `version-16`
 
-### 3.2 `nextcloud/`
-
-- `nextcloud/` 是部署工程
-- `nextcloud/image-full/` 是派生镜像
-- 当前版本线跟 `33.x`
-- 当前 tag 习惯：
-  - 固定：`33.x.y-apache-full`
-  - 通道：`33-apache-full`
-  - 便利：`latest`
-
-### 3.3 `openclaw/`
+### 3.2 `openclaw/`
 
 - 会同步上游 `docker-setup.sh`
 - `openclaw/upstream/` 是上游快照区，不要乱塞别的文件

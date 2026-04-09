@@ -42,7 +42,6 @@
   - `产品名 + 主版本号`
 
 例子：
-- `nextcloud`
 - `openclaw`
 - `erpnext16`
 
@@ -139,13 +138,13 @@
 
 这两类要分开：
 
-1. **派生镜像**
-   - 例：`nextcloud/image-full`
-   - 特点：基于官方镜像，加系统依赖或做少量运行时增强
+1. **派生镜像 / 构建输入**
+   - 例：`erpnext16/image`
+   - 特点：基于官方镜像或官方源码的构建输入，给最终交付镜像提供依赖和版本约束
 
-2. **部署脚本/部署工程**
-   - 例：`nextcloud/`
-   - 特点：重点是跑起来，不是自己造基础镜像
+2. **部署入口 / 运行入口**
+   - 例：`erpnext16/single-aio`
+   - 特点：重点是让用户直接跑起来，而不是暴露一堆内部构建细节
 
 README 一开始就要讲明白，别让人混。
 
@@ -160,8 +159,8 @@ README 一开始就要讲明白，别让人混。
 例子：
 
 ```dockerfile
-ARG NEXTCLOUD_VERSION=33.0.0
-FROM nextcloud:${NEXTCLOUD_VERSION}-apache
+ARG FRAPPE_IMAGE_TAG=version-16
+FROM frappe/build:${FRAPPE_IMAGE_TAG} AS builder
 ```
 
 #### 基于官方源码构建时
@@ -260,11 +259,10 @@ body: |
 
 例子：
 - ERPNext：`v16.13.0`
-- Nextcloud：`33.0.2`
+- OpenClaw：按上游实际 tag 或版本文件取值
 
 如果是变体镜像，就在后缀上表达：
 - `v16.13.0-aio`
-- `33.0.2-apache-full`
 
 ### 6.2 `latest` 的规则
 
@@ -279,19 +277,13 @@ body: |
 - 固定：`ghcr.io/<owner>/erpnext16:v16.x.y-aio`
 - 滚动：`ghcr.io/<owner>/erpnext16:aio`
 
-#### Nextcloud 增强镜像
-
-- 固定：`ghcr.io/<owner>/nextcloud-full:33.x.y-apache-full`
-- 通道：`ghcr.io/<owner>/nextcloud-full:33-apache-full`
-- 便利：`ghcr.io/<owner>/nextcloud-full:latest`
-
 ### 6.4 Git tag 命名
 
 如果一个仓库里有多个子项目，Git tag 不要太泛。
 
 建议：
-- `nextcloud-full-v33.0.2`
 - `erpnext16-v16.13.0-aio`
+- `openclaw-v1.2.3`
 
 这样看 tag 就知道是哪个子项目，不会互相打架。
 
@@ -306,9 +298,8 @@ body: |
 - 变量文件、约定文件保留行业常见写法
 
 例子：
-- `nextcloud-full-ci-sync-build.yml`
 - `erpnext16-single-container-aio.yml`
-- `docker-compose.unraid.yml`
+- `docker-compose.example.yml`
 - `packages.txt`
 - `apps.json`
 
@@ -325,7 +316,6 @@ body: |
 ### 7.3 版本文件名
 
 如果项目有一个单独版本文件，就直接叫：
-- `NEXTCLOUD_VERSION`
 - `OPENCLAW_VERSION`
 
 不要把版本散落到三四个 README 里让人猜。
@@ -343,8 +333,7 @@ body: |
 ```
 
 例子：
-- `nextcloud-full-ci-sync-build.yml`
-- `erpnext16-custom-image.yml`
+- `erpnext16-single-container-aio.yml`
 - `openclaw-sync-and-build.yml`
 
 ### 8.2 workflow 显示名
@@ -353,7 +342,7 @@ body: |
 
 推荐风格：
 - `Build ERPNext16 AIO image (single container)`
-- `nextcloud-full sync & build`
+- `openclaw sync & build`
 
 ### 8.3 action 命名建议
 
