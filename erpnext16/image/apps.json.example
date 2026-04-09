@@ -2,10 +2,17 @@
   {
     "url": "https://github.com/frappe/erpnext",
     "branch": "version-16"
+  },
+  {
+    "url": "https://github.com/frappe/hrms",
+    "branch": "version-16"
+  },
+  {
+    "url": "https://github.com/frappe/print_designer",
+    "branch": "version-16"
+  },
+  {
+    "url": "https://github.com/frappe/helpdesk",
+    "branch": "main"
   }
-
-  // Optional official apps (remove comments and keep valid JSON):
-  // ,{ "url": "https://github.com/frappe/hrms", "branch": "version-16" }
-  // ,{ "url": "https://github.com/frappe/print_designer", "branch": "version-16" }
-  // ,{ "url": "https://github.com/frappe/helpdesk", "branch": "main" }
 ]
