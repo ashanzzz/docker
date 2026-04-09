@@ -2,8 +2,7 @@ name: OpenClaw Sync & Build
 
 on:
   schedule:
-    # Run multiple times per day to reduce lag behind upstream releases.
-    - cron: '0 */6 * * *' # every 6 hours (UTC)
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       force_build:
@@ -22,10 +21,11 @@ concurrency:
 jobs:
   sync-and-build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install tools
         run: |
@@ -39,31 +39,16 @@ jobs:
           set -euo pipefail
           UPSTREAM_URL="https://raw.githubusercontent.com/openclaw/openclaw/main/docker-setup.sh"
           TARGET="openclaw/upstream/docker-setup.sh"
-
           mkdir -p "$(dirname "$TARGET")"
           curl -fsSL "$UPSTREAM_URL" -o "$TARGET.new"
-
           if [ -f "$TARGET" ] && cmp -s "$TARGET" "$TARGET.new"; then
             rm -f "$TARGET.new"
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No upstream docker-setup.sh changes."
           else
             mv "$TARGET.new" "$TARGET"
             chmod +x "$TARGET"
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Upstream docker-setup.sh changed; file updated."
           fi
-
-      - name: Commit synced script
-        if: ${{ steps.sync.outputs.changed == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name  "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add openclaw/upstream/docker-setup.sh
-          git commit -m "chore(openclaw): sync upstream docker-setup.sh"
-          git push
 
       - name: Resolve official OpenClaw version
         id: ver
@@ -72,30 +57,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Use an authenticated GitHub API call to avoid rate limits.
-          OFFICIAL_TAG=$(curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/openclaw/openclaw/releases/latest \
-            | jq -r '.tag_name // empty')
-
+          OFFICIAL_TAG=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openclaw/openclaw/releases/latest | jq -r '.tag_name // empty')
           if [ -z "$OFFICIAL_TAG" ] || [ "$OFFICIAL_TAG" = "null" ]; then
-            OFFICIAL_TAG=$(curl -fsSL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              https://api.github.com/repos/openclaw/openclaw/tags?per_page=1 \
-              | jq -r '.[0].name')
+            OFFICIAL_TAG=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/openclaw/openclaw/tags?per_page=1 | jq -r '.[0].name')
           fi
-
-          OFFICIAL_TAG=${OFFICIAL_TAG#v}
-          if [ -z "$OFFICIAL_TAG" ] || [ "$OFFICIAL_TAG" = "null" ]; then
-            echo "Failed to resolve official OpenClaw version" >&2
-            exit 1
-          fi
-
+          [[ -n "$OFFICIAL_TAG" && "$OFFICIAL_TAG" != "null" ]] || { echo "Failed to resolve official OpenClaw version" >&2; exit 1; }
           echo "official_version=$OFFICIAL_TAG" >> "$GITHUB_OUTPUT"
-          echo "Official version: $OFFICIAL_TAG"
-          echo "official_version=$OFFICIAL_TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compare and update OPENCLAW_VERSION
+        id: syncver
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="openclaw/OPENCLAW_VERSION"
+          OFFICIAL="${{ steps.ver.outputs.official_version }}"
+          CURRENT=""
+          if [[ -f "$TARGET" ]]; then
+            CURRENT=$(tr -d '\r\n' < "$TARGET")
+          fi
+          if [[ "$CURRENT" != "$OFFICIAL" ]]; then
+            printf '%s\n' "$OFFICIAL" > "$TARGET"
+            echo "version_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit synced files
+        if: ${{ steps.sync.outputs.changed == 'true' || steps.syncver.outputs.version_changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add openclaw/upstream/docker-setup.sh openclaw/OPENCLAW_VERSION
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore(openclaw): sync tracked upstream files"
+          git push
 
       - name: Decide whether build is needed
         id: decide
@@ -106,37 +105,29 @@ jobs:
           OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           IMAGE_PATH="${OWNER_LC}/openclaw"
           VERSION="${{ steps.ver.outputs.official_version }}"
-
-          echo "image_path=$IMAGE_PATH" >> "$GITHUB_STEP_SUMMARY"
-
           if [ "$FORCE_BUILD" = "true" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "reason=force_build" >> "$GITHUB_OUTPUT"
-            echo "Build decision: FORCE_BUILD=true" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-
-          # Proper GHCR auth: exchange scope for a registry bearer token.
-          # NOTE: token endpoint may return 403 if the package doesn't exist yet; treat that as "needs build".
+          if [ "${{ steps.sync.outputs.changed }}" = "true" ] || [ "${{ steps.syncver.outputs.version_changed }}" = "true" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=tracked_files_changed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           GHCR_PULL_TOKEN=$(curl -sS "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" | jq -r '.token // empty' || true)
-
           if [ -z "$GHCR_PULL_TOKEN" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "reason=package_missing" >> "$GITHUB_OUTPUT"
-            echo "Build required: ghcr.io/${IMAGE_PATH} not found yet (first build)." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-
           TAGS_JSON=$(curl -sS -H "Authorization: Bearer ${GHCR_PULL_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
-
           if [ -n "$TAGS_JSON" ] && echo "$TAGS_JSON" | jq -e --arg v "$VERSION" '.tags // [] | index($v) != null' >/dev/null; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "reason=official_version_exists" >> "$GITHUB_OUTPUT"
-            echo "Skip build: ghcr.io/${IMAGE_PATH}:${VERSION} already exists." | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "reason=official_version_missing" >> "$GITHUB_OUTPUT"
-            echo "Build required: official version tag ${VERSION} is not present." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Set up QEMU
