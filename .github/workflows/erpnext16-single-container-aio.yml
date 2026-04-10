@@ -195,6 +195,7 @@ jobs:
             APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/erpnext16:aio
+            ghcr.io/${{ github.repository_owner }}/erpnext16:latest
             ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
 
       - name: Smoke-check image metadata

@@ -4,7 +4,17 @@
 
 本目录会构建并推送镜像：
 - `ghcr.io/ashanzzz/erpnext16:aio`
+- `ghcr.io/ashanzzz/erpnext16:latest`
 - `ghcr.io/ashanzzz/erpnext16:v16.x.y-aio`
+
+## 默认登录信息
+
+- **站点地址**：`http://<容器IP>:6888/login`
+- **用户名**：`Administrator`
+- **密码**：`adminpassword`
+- **数据库 root 密码**：`mysqlpassword`
+
+> 建议首次登录后立即修改密码。
 
 ## 运行示例（Unraid）
 
