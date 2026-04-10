@@ -65,12 +65,16 @@
 当前 AIO 构建策略是：
 
 - `FRAPPE_IMAGE_TAG=version-16`
-- `FRAPPE_BRANCH=<与 ERPNext 相同的精确 v16.x.y tag>`
+- `FRAPPE_BRANCH=<优先使用与 ERPNext 相同的精确 v16.x.y tag；找不到时回退到 version-16 分支>`
 - ERPNext app 也 pin 到同一个 `v16.x.y`
 
-如果 workflow 找到了 ERPNext 的 `v16.x.y`，却找不到官方 `frappe/frappe` 的同名 tag，构建会直接失败。
+如果 workflow 找到了 ERPNext 的 `v16.x.y`，并且官方 `frappe/frappe` 也有同名 tag，就优先用同名 tag。
 
-这就是当前仓库对“可重复构建”的最低保障。
+如果官方没有同名 Frappe tag，就回退到 `version-16` 分支，保证 AIO 镜像还能继续构建。
+
+这意味着：
+- 能精确对齐时就精确对齐
+- 对不齐时，至少仍然锁在官方 `version-16` 主版本线上
 
 ---
 

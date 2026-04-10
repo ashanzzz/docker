@@ -22,14 +22,17 @@
 当前仓库默认策略是：
 
 - `FRAPPE_IMAGE_TAG=version-16`
-- `FRAPPE_BRANCH=<与 ERPNext 相同的精确 v16.x.y tag>`
+- `FRAPPE_BRANCH=<优先使用与 ERPNext 相同的精确 v16.x.y tag；找不到时回退到 version-16 分支>`
 - ERPNext app 在 workflow 里尽量 pin 到发现到的 `v16.x.y`
 
 这意味着：
 - 基础镜像仍然跟 `version-16` 主版本线
-- Frappe 源码和 ERPNext app 要求对齐到同一个精确 tag
+- Frappe 源码优先和 ERPNext app 对齐到同一个精确 tag
+- 如果官方没有同名 Frappe tag，就回退到 `version-16` 分支继续构建
 
-如果 workflow 找到了 ERPNext 的 `v16.x.y`，却找不到官方 `frappe/frappe` 的同名 tag，构建会直接失败，而不是自动回退到 `version-16` 分支。
+这样做的目的不是追求绝对锁死，而是保证：
+- 能对齐就对齐
+- 对不齐时也别把 AIO 构建整条链卡死
 
 ---
 
@@ -64,7 +67,7 @@ bash build.sh
 
 说明：
 - `build.sh` 本地默认值仍然是 `FRAPPE_BRANCH=version-16`，这是为了手动构建时少填参数。
-- 但 GitHub Actions 自动发布流程已经更严格，要求 `FRAPPE_BRANCH` 和 ERPNext 使用同一个精确 `v16.x.y` tag。
+- GitHub Actions 自动发布流程会优先尝试同一个精确 `v16.x.y` tag；如果官方没有同名 Frappe tag，就回退到 `version-16` 分支。
 - 如果你想本地复现 CI 的严格策略，构建时请显式传入同一个精确 tag，例如：
 
 ```bash
