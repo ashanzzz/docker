@@ -57,6 +57,31 @@ docker run -d --name erpnext16 \
 - 正式用的时候，第一次登录后就改密码
 - 如果你不想用默认值，直接在 Unraid 模板里覆盖环境变量即可
 
+### 一键重置为全新系统
+
+容器里现在带了一个重置脚本：
+
+```bash
+docker exec -it erpnext16 aio-reset.sh --yes
+```
+
+它会做这些事：
+
+1. 把当前数据备份到：
+   - `/home/frappe/frappe-bench/sites/.aio-reset-backups/<时间戳>/`
+2. 备份内容包括：
+   - `sites.tar.gz`
+   - `mysql.tar.gz`
+   - `redis.tar.gz`
+   - `metadata.txt`
+3. 清空运行中的 `sites/mysql/redis`
+4. 终止容器主进程，让 Docker 按重启策略重新拉起一个“全新初始化”的系统
+
+说明：
+- 备份放在挂载卷里，不放在镜像内部
+- 这样容器重建后，备份还在
+- 如果你只是想回看旧数据，去 `.aio-reset-backups/` 里找对应时间戳目录就行
+
 ### 可选参数（一般不需要）
 
 - `MARIADB_USER_HOST_LOGIN_SCOPE`：默认已是 `localhost`，通常无需再传。
