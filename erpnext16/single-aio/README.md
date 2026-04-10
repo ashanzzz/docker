@@ -11,6 +11,21 @@
 > 镜像容器内固定监听 **8080**。
 > 你对外暴露的端口完全由 `-p <HOST_PORT>:8080` 决定（例如 6888/6001/8888 都可以，只要不冲突）。
 
+### Unraid 模板里最容易配错的两项
+
+1. **WebUI / 端口映射必须指向容器 `8080`，不是 `8000`**
+   - `8000` 是 gunicorn 后端端口
+   - `8080` 才是 nginx 对外入口
+   - 正确示例：宿主机 `6888` -> 容器 `8080`
+
+2. **不要挂载 `/etc/supervisor/supervisord.conf`**
+   - 镜像里已经带了配好的 supervisor 配置
+   - 如果你用宿主机文件覆盖它，常见结果就是 nginx / worker / scheduler 启动链不一致
+   - 这个 AIO 方案只需要挂载：
+     - `/home/frappe/frappe-bench/sites`
+     - `/var/lib/mysql`
+     - `/var/lib/redis`
+
 ### 最简启动（推荐）
 
 ```bash
@@ -18,8 +33,8 @@ docker run -d --name erpnext16 \
   --restart unless-stopped \
   -p 6888:8080 \
   -e SITE_NAME=site1.local \
-  -e ADMIN_PASSWORD=ChangeMe_Admin \
-  -e MARIADB_ROOT_PASSWORD=ChangeMe_Strong_DB \
+  -e ADMIN_PASSWORD=adminpassword \
+  -e MARIADB_ROOT_PASSWORD=mysqlpassword \
   -v /mnt/user/appdata/erpnext16/sites:/home/frappe/frappe-bench/sites \
   -v /mnt/user/appdata/erpnext16/mysql:/var/lib/mysql \
   -v /mnt/user/appdata/erpnext16/redis:/var/lib/redis \
@@ -28,15 +43,50 @@ docker run -d --name erpnext16 \
 
 访问：`http://<unraid-ip>:6888/login`
 
+### 默认初始化值
+
+如果你不传环境变量，镜像会用下面这些默认值初始化：
+
+- 站点名：`site1.local`
+- ERPNext 登录用户名：`Administrator`
+- ERPNext 默认管理员密码：`adminpassword`
+- MariaDB root 密码：`mysqlpassword`
+
+建议：
+- 这套默认值只是为了第一次起容器更省事
+- 正式用的时候，第一次登录后就改密码
+- 如果你不想用默认值，直接在 Unraid 模板里覆盖环境变量即可
+
 ### 可选参数（一般不需要）
 
 - `MARIADB_USER_HOST_LOGIN_SCOPE`：默认已是 `localhost`，通常无需再传。
+
+### 多 site 说明
+
+- 默认只会自动创建一个站点：`site1.local`
+- `sites/` 目录本身可以放多个 site
+- 如果你后面要加第二个 site，可以在容器里用 bench 手动创建
+- 也就是说：单容器 AIO 默认是“单 site 开箱即用”，不是“自动多 site 初始化”
 
 ### 重要提示
 
 - **不要**额外挂载覆盖 `/etc/supervisor/supervisord.conf`（否则会覆盖镜像内的修复，导致行为不一致）。
 - 这个仓库现在已经锁定成 AIO-only。`erpnext16/` 下不再维护多容器运行入口。
 - `erpnext16/image/` 仍然保留，但它只是 AIO 构建时使用的 app 清单和构建辅助目录，不是独立部署入口。
+- 如果首次初始化 MariaDB 失败，最省事的恢复方式是：删掉容器，清空 `sites/mysql/redis` 三个目录后重新创建。
+- `MARIADB_ROOT_PASSWORD` 建议先用普通强密码（字母、数字、下划线、短横线），先不要带单引号。
+
+### 改错后的访问方式
+
+如果你把 Unraid 模板改成：
+- Host Port: `6888`
+- Container Port: `8080`
+
+那访问地址就是：
+
+```text
+http://<你的Unraid-IP>:6888/login
+```
 
 ## 升级
 

@@ -4,8 +4,8 @@ set -euo pipefail
 # ERPNext16 single-container AIO entrypoint
 
 : "${SITE_NAME:=site1.local}"
-: "${ADMIN_PASSWORD:=admin}"
-: "${MARIADB_ROOT_PASSWORD:=ChangeMe_Strong_DB_Password}"
+: "${ADMIN_PASSWORD:=adminpassword}"
+: "${MARIADB_ROOT_PASSWORD:=mysqlpassword}"
 : "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
 
 # nginx-entrypoint.sh expects these; we use local ports
@@ -146,25 +146,38 @@ for i in $(seq 1 60); do
   fi
 done
 
-# Ensure root password / remote root exists (best-effort)
-# We connect via unix socket as root.
+# Ensure root password / remote root exists.
+# MariaDB may answer ping before socket auth is fully ready, so retry root auth too.
 echo "[aio] Ensuring MariaDB root password..."
-# Try socket auth (fresh install), then try with password (when reusing volumes)
-if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -e 'SELECT 1' >/dev/null 2>&1; then
-  ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
-elif mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}" -e 'SELECT 1' >/dev/null 2>&1; then
-  ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
-else
-  echo "[aio] ERROR: cannot connect to MariaDB as root (socket)" >&2
+ROOT_AUTH=()
+for i in $(seq 1 30); do
+  if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -e 'SELECT 1' >/dev/null 2>&1; then
+    ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
+    break
+  fi
+  if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}" -e 'SELECT 1' >/dev/null 2>&1; then
+    ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
+    break
+  fi
+  sleep 2
+done
+
+if [ ${#ROOT_AUTH[@]} -eq 0 ]; then
+  echo "[aio] ERROR: MariaDB is up, but root socket auth is still unavailable" >&2
   exit 1
 fi
 
+# Escape single quotes before injecting password into SQL.
+SQL_ESCAPED_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD//\'/\'\'}
+
 "${ROOT_AUTH[@]}" <<SQL
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}';
-CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD}';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
+
+echo "[aio] MariaDB root credentials ready."
 
 # Configure common_site_config to use local services
 su - frappe -c "cd /home/frappe/frappe-bench && \
