@@ -154,7 +154,7 @@ jobs:
           APPS_JSON_BASE64=$(jq --arg ver "$VER_V" 'map(if (.url|endswith("/erpnext")) then .branch=$ver else . end)' "$APPS_JSON_PATH" | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
           echo "apps_json_base64=$APPS_JSON_BASE64" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve exact Frappe ref
+      - name: Resolve Frappe ref for AIO build
         if: ${{ steps.decide.outputs.should_build == 'true' }}
         id: frappe_ref
         shell: bash
@@ -164,9 +164,18 @@ jobs:
           FRAPPE_REF="$ERPNEXT_REF"
           if git ls-remote --exit-code --tags https://github.com/frappe/frappe "refs/tags/${FRAPPE_REF}" >/dev/null 2>&1; then
             echo "frappe_ref=$FRAPPE_REF" >> "$GITHUB_OUTPUT"
+            echo "frappe_ref_mode=exact_tag" >> "$GITHUB_OUTPUT"
+            echo "Using exact Frappe tag: ${FRAPPE_REF}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          echo "::error::Exact Frappe tag not found for ${FRAPPE_REF}. Refusing to fall back to version-16 branch."
+          if git ls-remote --exit-code --heads https://github.com/frappe/frappe "refs/heads/version-16" >/dev/null 2>&1; then
+            echo "frappe_ref=version-16" >> "$GITHUB_OUTPUT"
+            echo "frappe_ref_mode=version_branch" >> "$GITHUB_OUTPUT"
+            echo "::warning::Exact Frappe tag ${FRAPPE_REF} not found. Falling back to version-16 branch."
+            echo "Frappe fallback: exact tag ${FRAPPE_REF} missing, using version-16 branch." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error::Neither exact Frappe tag ${FRAPPE_REF} nor version-16 branch is available."
           exit 1
 
       - name: Build & Push (GHCR)
