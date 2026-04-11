@@ -56,7 +56,14 @@ bootstrap_sites_volume
 # Initialize MariaDB datadir if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
   echo "[aio] Initializing MariaDB data directory..."
-  mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
+  if mariadb-install-db --help 2>/dev/null | grep -q -- '--auth-root-authentication-method'; then
+    mariadb-install-db \
+      --user=mysql \
+      --datadir=/var/lib/mysql \
+      --auth-root-authentication-method=normal >/dev/null
+  else
+    mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
+  fi
 fi
 
 # Generate nginx config for Frappe (listen 8080; route to local backend/socketio)
@@ -149,28 +156,32 @@ done
 # Ensure root password / remote root exists.
 # MariaDB may answer ping before socket auth is fully ready, so retry root auth too.
 echo "[aio] Ensuring MariaDB root password..."
-ROOT_AUTH=()
+DB_AUTH=()
 for i in $(seq 1 30); do
   if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -e 'SELECT 1' >/dev/null 2>&1; then
-    ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
+    DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
     break
   fi
   if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}" -e 'SELECT 1' >/dev/null 2>&1; then
-    ROOT_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
+    DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
+    break
+  fi
+  if [ -f /etc/mysql/debian.cnf ] && mariadb --defaults-extra-file=/etc/mysql/debian.cnf -e 'SELECT 1' >/dev/null 2>&1; then
+    DB_AUTH=(mariadb --defaults-extra-file=/etc/mysql/debian.cnf)
     break
   fi
   sleep 2
 done
 
-if [ ${#ROOT_AUTH[@]} -eq 0 ]; then
-  echo "[aio] ERROR: MariaDB is up, but root socket auth is still unavailable" >&2
+if [ ${#DB_AUTH[@]} -eq 0 ]; then
+  echo "[aio] ERROR: MariaDB is up, but neither root nor debian maintenance auth is available" >&2
   exit 1
 fi
 
 # Escape single quotes before injecting password into SQL.
 SQL_ESCAPED_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD//\'/\'\'}
 
-"${ROOT_AUTH[@]}" <<SQL
+"${DB_AUTH[@]}" <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
 CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
