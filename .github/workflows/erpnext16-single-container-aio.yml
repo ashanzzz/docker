@@ -14,6 +14,10 @@ on:
         description: "Rebuild without cache (true/false)"
         required: false
         default: "false"
+      upload_image_artifact:
+        description: "Also export a compressed image artifact for manual docker load (true/false)"
+        required: false
+        default: "false"
   schedule:
     - cron: "41 2 * * *"
 
@@ -202,6 +206,26 @@ jobs:
         if: ${{ steps.decide.outputs.should_build == 'true' }}
         run: |
           docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
+
+      - name: Export docker image artifact
+        if: ${{ steps.decide.outputs.should_build == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_image_artifact == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio"
+          OUT="/tmp/erpnext16-${{ steps.syncver.outputs.version }}-aio.docker.tar.gz"
+          docker pull "$IMAGE"
+          docker save "$IMAGE" | gzip -1 > "$OUT"
+          ls -lh "$OUT"
+
+      - name: Upload docker image artifact
+        if: ${{ steps.decide.outputs.should_build == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_image_artifact == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: erpnext16-${{ steps.syncver.outputs.version }}-aio-docker-image
+          path: /tmp/erpnext16-${{ steps.syncver.outputs.version }}-aio.docker.tar.gz
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Nothing to build
         if: ${{ steps.decide.outputs.should_build != 'true' }}
