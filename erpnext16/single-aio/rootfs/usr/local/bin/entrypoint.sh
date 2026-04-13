@@ -157,7 +157,9 @@ done
 # MariaDB may answer ping before socket auth is fully ready, so retry root auth too.
 echo "[aio] Ensuring MariaDB root password..."
 DB_AUTH=()
-for i in $(seq 1 30); do
+SKIP_GRANTS=false
+
+for i in $(seq 1 15); do
   if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -e 'SELECT 1' >/dev/null 2>&1; then
     DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
     break
@@ -174,19 +176,77 @@ for i in $(seq 1 30); do
 done
 
 if [ ${#DB_AUTH[@]} -eq 0 ]; then
-  echo "[aio] ERROR: MariaDB is up, but neither root nor debian maintenance auth is available" >&2
-  exit 1
+  echo "[aio] Standard auth methods failed; using skip-grant-tables to reset root auth..."
+  SKIP_GRANTS=true
 fi
 
-# Escape single quotes before injecting password into SQL.
 SQL_ESCAPED_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD//\'/\'\'}
 
-"${DB_AUTH[@]}" <<SQL
+if [ "$SKIP_GRANTS" = true ]; then
+  # Restart MariaDB in skip-grant-tables mode to reset root auth
+  # This handles existing data dirs with incompatible auth (e.g. unix_socket→password switch)
+  echo "[aio] Restarting MariaDB in skip-grant-tables mode..."
+  pkill mariadbd || true
+  sleep 3
+
+  /usr/sbin/mariadbd \
+    --datadir=/var/lib/mysql \
+    --user=mysql \
+    --socket=/run/mysqld/mysqld.sock \
+    --skip-grant-tables \
+    --skip-networking \
+    --pid-file=/run/mysqld/skip-grants.pid \
+    >/var/log/supervisor/skip-grants.log 2>&1 &
+
+  SKIP_PID=$!
+  for i in $(seq 1 30); do
+    if mariadb --socket=/run/mysqld/mysqld.sock -e "SELECT 1" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+    if [ "$i" = "30" ]; then
+      echo "[aio] ERROR: MariaDB skip-grant-tables start failed" >&2
+      cat /var/log/supervisor/skip-grants.log >&2
+      kill $SKIP_PID 2>/dev/null || true
+      exit 1
+    fi
+  done
+
+  # Reset root auth and password in skip-grant-tables mode
+  mariadb --socket=/run/mysqld/mysqld.sock <<SQL
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
+ALTER USER 'root'@'%' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+SQL
+
+  echo "[aio] Root auth reset done. Restarting MariaDB normally..."
+  pkill mariadbd || true
+  sleep 3
+
+  # Restart MariaDB normally (supervisor will bring it back up)
+  kill -TERM $SUP_PID 2>/dev/null || true
+  sleep 2
+
+  # Wait for supervisor + mariadb to come back up
+  for i in $(seq 1 30); do
+    if mariadb-admin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+
+  DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
+else
+  # Standard path: apply password via authenticated connection
+  "${DB_AUTH[@]}" <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
 CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 SQL
+fi
 
 echo "[aio] MariaDB root credentials ready."
 
@@ -217,4 +277,4 @@ supervisorctl start backend websocket worker scheduler nginx
 
 echo "[aio] Ready. ERPNext should be reachable on :8080"
 
-wait "$SUP_PID"
+wait $SUP_PID
