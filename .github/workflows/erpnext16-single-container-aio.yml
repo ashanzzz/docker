@@ -182,6 +182,16 @@ jobs:
           echo "::error::Neither exact Frappe tag ${FRAPPE_REF} nor version-16 branch is available."
           exit 1
 
+      - name: Resolve short SHA for image tagging
+        if: ${{ steps.decide.outputs.should_build == 'true' }}
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Using trace tag: sha-${SHORT_SHA}-aio" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build & Push (GHCR)
         if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/build-push-action@v6
@@ -197,10 +207,15 @@ jobs:
             FRAPPE_BRANCH=${{ steps.frappe_ref.outputs.frappe_ref }}
             FRAPPE_PATH=https://github.com/frappe/frappe
             APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.syncver.outputs.version }}-aio
           tags: |
             ghcr.io/${{ github.repository_owner }}/erpnext16:aio
             ghcr.io/${{ github.repository_owner }}/erpnext16:latest
             ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
+            ghcr.io/${{ github.repository_owner }}/erpnext16:sha-${{ steps.meta.outputs.short_sha }}-aio
 
       - name: Smoke-check image metadata
         if: ${{ steps.decide.outputs.should_build == 'true' }}
