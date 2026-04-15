@@ -7,6 +7,7 @@ set -euo pipefail
 : "${ADMIN_PASSWORD:=adminpassword}"
 : "${MARIADB_ROOT_PASSWORD:=mysqlpassword}"
 : "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
+: "${MARIADB_READY_TIMEOUT_SECONDS:=900}"
 
 # nginx-entrypoint.sh expects these; we use local ports
 : "${FRAPPE_SITE_NAME_HEADER:=$SITE_NAME}"
@@ -140,18 +141,38 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# Wait for MariaDB socket
-echo "[aio] Waiting for MariaDB to be ready..."
-for i in $(seq 1 60); do
-  if mariadb-admin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
-  if [ "$i" = "60" ]; then
-    echo "[aio] MariaDB did not become ready" >&2
-    exit 1
-  fi
-done
+wait_for_mariadb_ready() {
+  local label="${1:-MariaDB}"
+  local timeout_seconds="${2:-$MARIADB_READY_TIMEOUT_SECONDS}"
+  local sleep_seconds=2
+  local attempts=$(( timeout_seconds / sleep_seconds ))
+  if [ "$attempts" -lt 1 ]; then attempts=1; fi
+
+  echo "[aio] Waiting for ${label} to be ready (timeout=${timeout_seconds}s)..."
+  for i in $(seq 1 "$attempts"); do
+    if mariadb-admin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if [ $(( i % 15 )) -eq 0 ]; then
+      echo "[aio] Still waiting for ${label} (${i} tries, ~${i}s*${sleep_seconds}/${timeout_seconds}s)..."
+      tail -n 20 /var/log/supervisor/mariadb.err 2>/dev/null || true
+      tail -n 20 /var/log/supervisor/mariadb.log 2>/dev/null || true
+      tail -n 20 /var/lib/mysql/*.err 2>/dev/null || true
+    fi
+
+    sleep "$sleep_seconds"
+  done
+
+  echo "[aio] ${label} did not become ready within ${timeout_seconds}s" >&2
+  tail -n 50 /var/log/supervisor/mariadb.err 2>/dev/null || true
+  tail -n 50 /var/log/supervisor/mariadb.log 2>/dev/null || true
+  tail -n 50 /var/lib/mysql/*.err 2>/dev/null || true
+  return 1
+}
+
+rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
+wait_for_mariadb_ready "MariaDB"
 
 # Ensure root password / remote root exists.
 # MariaDB may answer ping before socket auth is fully ready, so retry root auth too.
@@ -183,12 +204,13 @@ fi
 SQL_ESCAPED_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD//\'/\'\'}
 
 if [ "$SKIP_GRANTS" = true ]; then
-  # Restart MariaDB in skip-grant-tables mode to reset root auth
-  # This handles existing data dirs with incompatible auth (e.g. unix_socket→password switch)
-  echo "[aio] Restarting MariaDB in skip-grant-tables mode..."
+  echo "[aio] Stopping supervisor-managed MariaDB before skip-grants..."
+  supervisorctl stop mariadb || true
   pkill mariadbd || true
   sleep 3
+  rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
 
+  echo "[aio] Restarting MariaDB in skip-grant-tables mode..."
   /usr/sbin/mariadbd \
     --datadir=/var/lib/mysql \
     --user=mysql \
@@ -199,43 +221,36 @@ if [ "$SKIP_GRANTS" = true ]; then
     >/var/log/supervisor/skip-grants.log 2>&1 &
 
   SKIP_PID=$!
-  for i in $(seq 1 30); do
+  for i in $(seq 1 120); do
     if mariadb --socket=/run/mysqld/mysqld.sock -e "SELECT 1" >/dev/null 2>&1; then
       break
     fi
     sleep 1
-    if [ "$i" = "30" ]; then
+    if [ "$i" = "120" ]; then
       echo "[aio] ERROR: MariaDB skip-grant-tables start failed" >&2
-      cat /var/log/supervisor/skip-grants.log >&2
-      kill $SKIP_PID 2>/dev/null || true
+      cat /var/log/supervisor/skip-grants.log >&2 || true
+      kill "$SKIP_PID" 2>/dev/null || true
       exit 1
     fi
   done
 
-  # Reset root auth and password in skip-grant-tables mode
   mariadb --socket=/run/mysqld/mysqld.sock <<SQL
-FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
-ALTER USER 'root'@'%' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
+UPDATE mysql.global_priv
+SET Priv = JSON_SET(
+  COALESCE(Priv, '{}'),
+  '$.plugin', 'mysql_native_password',
+  '$.authentication_string', PASSWORD('${SQL_ESCAPED_ROOT_PASSWORD}')
+)
+WHERE User='root' AND Host='localhost';
 SQL
 
   echo "[aio] Root auth reset done. Restarting MariaDB normally..."
-  pkill mariadbd || true
+  kill -TERM "$SKIP_PID" 2>/dev/null || true
   sleep 3
+  rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
 
-  # Restart MariaDB normally (supervisor will bring it back up)
-  kill -TERM $SUP_PID 2>/dev/null || true
-  sleep 2
-
-  # Wait for supervisor + mariadb to come back up
-  for i in $(seq 1 30); do
-    if mariadb-admin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; then
-      break
-    fi
-    sleep 2
-  done
+  supervisorctl start mariadb || true
+  wait_for_mariadb_ready "MariaDB after skip-grants" 300
 
   DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
 else
