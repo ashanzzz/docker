@@ -9,6 +9,11 @@ set -euo pipefail
 : "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
 : "${MARIADB_READY_TIMEOUT_SECONDS:=900}"
 
+# Redis logical DB split (single redis-server, separate logical DBs)
+: "${REDIS_CACHE_DB:=0}"
+: "${REDIS_QUEUE_DB:=1}"
+: "${REDIS_SOCKETIO_DB:=2}"
+
 # nginx-entrypoint.sh expects these; we use local ports
 : "${FRAPPE_SITE_NAME_HEADER:=$SITE_NAME}"
 : "${BACKEND:=127.0.0.1:8000}"
@@ -16,6 +21,7 @@ set -euo pipefail
 
 # envsubst only reads *exported* environment variables
 export SITE_NAME ADMIN_PASSWORD MARIADB_ROOT_PASSWORD MARIADB_USER_HOST_LOGIN_SCOPE
+export REDIS_CACHE_DB REDIS_QUEUE_DB REDIS_SOCKETIO_DB
 export FRAPPE_SITE_NAME_HEADER BACKEND SOCKETIO
 
 mkdir -p /run/mysqld /var/lib/redis /var/log/supervisor
@@ -269,9 +275,9 @@ echo "[aio] MariaDB root credentials ready."
 su - frappe -c "cd /home/frappe/frappe-bench && \
   bench set-config -g db_host 127.0.0.1 && \
   bench set-config -gp db_port 3306 && \
-  bench set-config -g redis_cache 'redis://127.0.0.1:6379' && \
-  bench set-config -g redis_queue 'redis://127.0.0.1:6379' && \
-  bench set-config -g redis_socketio 'redis://127.0.0.1:6379' && \
+  bench set-config -g redis_cache 'redis://127.0.0.1:6379/${REDIS_CACHE_DB}' && \
+  bench set-config -g redis_queue 'redis://127.0.0.1:6379/${REDIS_QUEUE_DB}' && \
+  bench set-config -g redis_socketio 'redis://127.0.0.1:6379/${REDIS_SOCKETIO_DB}' && \
   bench set-config -gp socketio_port 9000" || true
 
 # Create site if missing

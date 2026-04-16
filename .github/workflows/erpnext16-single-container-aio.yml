@@ -1,6 +1,12 @@
 name: Build ERPNext16 AIO image (single container)
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/erpnext16-single-container-aio.yml'
+      - 'erpnext16/**'
   workflow_dispatch:
     inputs:
       version:
@@ -118,6 +124,11 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.syncver.outputs.version }}"
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Push touching erpnext16 source/workflow detected; forcing rebuild." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0

@@ -95,6 +95,11 @@ docker exec -it erpnext16 aio-reset.sh --yes
 ### 可选参数（一般不需要）
 
 - `MARIADB_USER_HOST_LOGIN_SCOPE`：默认已是 `localhost`，通常无需再传。
+- `GUNICORN_WORKERS`：默认 `1`。如果宿主机资源充足，可再调大。
+- `GUNICORN_THREADS`：默认 `2`。
+- `GUNICORN_TIMEOUT`：默认 `300` 秒，用于降低首次重负载页面/接口被过早杀掉的概率。
+- `BENCH_WORKER_QUEUES`：默认 `long,default,short`。
+- `REDIS_CACHE_DB` / `REDIS_QUEUE_DB` / `REDIS_SOCKETIO_DB`：默认分别是 `0/1/2`，单 Redis 实例下也会按逻辑库拆分，避免全部挤在同一个 DB。
 
 ### 多 site 说明
 
@@ -106,6 +111,7 @@ docker exec -it erpnext16 aio-reset.sh --yes
 ### 重要提示
 
 - **不要**额外挂载覆盖 `/etc/supervisor/supervisord.conf`（否则会覆盖镜像内的修复，导致行为不一致）。
+- 当前 AIO 默认已偏向 **低资源 / Unraid 稳定优先**：web gunicorn 默认更轻、timeout 更宽，Redis 逻辑库也已拆分；如果你后面要追求吞吐，再手动往上调。
 - 这个仓库现在已经锁定成 AIO-only。`erpnext16/` 下不再维护多容器运行入口。
 - `erpnext16/image/` 仍然保留，但它只是 AIO 构建时使用的 app 清单和构建辅助目录，不是独立部署入口。
 - 如果首次初始化 MariaDB 失败，最省事的恢复方式是：删掉容器，清空 `sites/mysql/redis` 三个目录后重新创建。

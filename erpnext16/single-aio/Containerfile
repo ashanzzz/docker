@@ -63,12 +63,15 @@ RUN mkdir -p /opt/sites-skel && \
 
 # AIO rootfs (supervisor configs + entrypoint)
 COPY rootfs/ /
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh /usr/local/bin/run-backend.sh /usr/local/bin/run-worker.sh
 
 # Persistent data
 VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+  CMD curl -fsS http://127.0.0.1:8080/login >/dev/null || exit 1
 
 STOPSIGNAL SIGTERM
 
