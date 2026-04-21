@@ -38,7 +38,7 @@ RUN export APP_INSTALL_ARGS="" && \
     /home/frappe/frappe-bench && \
   cp -a /opt/custom-apps/ashan_cn_procurement /home/frappe/frappe-bench/apps/ashan_cn_procurement && \
   cd /home/frappe/frappe-bench && \
-  python -m pip install --no-deps -e apps/ashan_cn_procurement && \
+  /home/frappe/frappe-bench/env/bin/python -m pip install --no-deps -e apps/ashan_cn_procurement && \
   printf '\nashan_cn_procurement\n' >> sites/apps.txt && \
   bench build --app ashan_cn_procurement && \
   echo "{}" > sites/common_site_config.json && \
