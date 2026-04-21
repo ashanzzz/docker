@@ -8,6 +8,8 @@
 
 **Tech Stack:** ERPNext 16 / Frappe 16、Custom Field、Property Setter、Client Script、whitelisted Python methods、fixtures、Print Format、AIO Docker build。
 
+**See also:** `erpnext16/docs/plans/2026-04-21-erpnext15-reverse-engineering-and-v16-tax-redesign.md`（ERPNext15 现状逆向分析、业务意图提炼、行级税率可行性与 16 重构方向）
+
 ---
 
 ## 1. 为什么要这样改
