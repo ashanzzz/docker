@@ -787,15 +787,16 @@ row.item_tax_rate = json.dumps({
 
 ---
 
-## 10. 与上一份计划的关系
+## 10. 与其他计划文档的关系
 
-本文件是：
-- **逆向分析与设计说明**
+### 这份文档是“ERPNext15 逆向分析 + 税率重构论证”
+它回答：
+- 你以前为什么这么做
+- 行级税率在 16 中能不能成立
+- 为什么建议走 custom app
 
-上一份计划文件是：
+### 当前应优先参考的执行基线
+- `erpnext16/docs/plans/2026-04-21-erpnext16-final-scope-and-architecture.md`
+  - 最终范围与架构决策版
 - `erpnext16/docs/plans/2026-04-21-cn-procurement-and-reimbursement-plan.md`
-- 它更偏：**实施任务分解**
-
-建议后续：
-- 先按本文件确认方向
-- 再按上一份文件推进实施
+  - 更偏实施任务拆解
