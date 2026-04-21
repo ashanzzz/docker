@@ -207,7 +207,7 @@ jobs:
         if: ${{ steps.decide.outputs.should_build == 'true' }}
         uses: docker/build-push-action@v6
         with:
-          context: ./erpnext16/single-aio
+          context: ./erpnext16
           file: ./erpnext16/single-aio/Containerfile
           push: true
           platforms: linux/amd64

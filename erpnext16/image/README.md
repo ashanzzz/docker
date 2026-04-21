@@ -14,6 +14,7 @@
 - `apps.json`：AIO 构建时实际使用的 app 列表
 - `apps.json.example`：可直接复制修改的示例
 - `build.sh` / `Containerfile`：保留下来的构建辅助文件，主要供本地调试或后续维护参考
+- `../custom-apps/`：随镜像一起打包的本地业务 custom app 源码
 
 ---
 

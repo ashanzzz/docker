@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a custom ERPNext16 image (adds extra official apps via apps.json)
+# Build a custom ERPNext16 image (adds official apps from apps.json + bundled local custom apps)
 # Based on frappe_docker layered Containerfile.
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +42,6 @@ docker build \
   --build-arg APPS_JSON_BASE64="$APPS_JSON_BASE64" \
   -t "${IMAGE}:${TAG}" \
   -f "$DIR/Containerfile" \
-  .
+  "$DIR/.."
 
 echo "DONE: ${IMAGE}:${TAG}"

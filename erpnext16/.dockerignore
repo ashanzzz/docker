@@ -1,0 +1,10 @@
+**/.git
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+custom-apps/**/build/
+custom-apps/**/dist/
+docs/
+overrides/
+run.sh
+README.md

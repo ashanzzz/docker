@@ -24,6 +24,8 @@ USER root
 RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
     mkdir /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
   fi
+COPY custom-apps /opt/custom-apps
+RUN chown -R frappe:frappe /opt/custom-apps
 
 USER frappe
 
@@ -39,7 +41,11 @@ RUN export APP_INSTALL_ARGS="" && \
     --skip-redis-config-generation \
     --verbose \
     /home/frappe/frappe-bench && \
+  cp -a /opt/custom-apps/ashan_cn_procurement /home/frappe/frappe-bench/apps/ashan_cn_procurement && \
   cd /home/frappe/frappe-bench && \
+  python -m pip install --no-deps -e apps/ashan_cn_procurement && \
+  printf '\nashan_cn_procurement\n' >> sites/apps.txt && \
+  bench build --app ashan_cn_procurement && \
   echo "{}" > sites/common_site_config.json && \
   find apps -mindepth 1 -path "*/.git" | xargs rm -fr
 

@@ -61,6 +61,7 @@ docker run -d --name erpnext16 \
 - ERPNext 登录用户名：`Administrator`
 - ERPNext 默认管理员密码：`adminpassword`
 - MariaDB root 密码：`mysqlpassword`
+- 默认安装 app：`erpnext,ashan_cn_procurement`
 
 建议：
 - 这套默认值只是为了第一次起容器更省事
@@ -94,6 +95,7 @@ docker exec -it erpnext16 aio-reset.sh --yes
 
 ### 可选参数（一般不需要）
 
+- `SITE_INSTALL_APPS`：默认 `erpnext,ashan_cn_procurement`。如果你后续还要把别的本地 app 一起装到站点，可以在这里追加。
 - `MARIADB_USER_HOST_LOGIN_SCOPE`：默认已是 `localhost`，通常无需再传。
 - `GUNICORN_WORKERS`：默认 `1`。如果宿主机资源充足，可再调大。
 - `GUNICORN_THREADS`：默认 `2`。

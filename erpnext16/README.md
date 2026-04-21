@@ -51,9 +51,11 @@
 当前 AIO workflow 会继续使用：
 - `erpnext16/image/apps.json`
 - `erpnext16/image/apps.json.example`
+- `erpnext16/custom-apps/`（本地 custom app 源码）
 
 也就是说：
 - 你可以把它理解为 AIO 镜像的 app 清单来源
+- `custom-apps/` 是跟镜像一起打进去的业务代码
 - 不是给用户单独拉一个“标准镜像”去部署的
 
 文档：`erpnext16/image/README.md`

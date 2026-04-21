@@ -8,6 +8,8 @@ set -euo pipefail
 : "${MARIADB_ROOT_PASSWORD:=mysqlpassword}"
 : "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
 : "${MARIADB_READY_TIMEOUT_SECONDS:=900}"
+: "${SITE_INSTALL_APPS:=erpnext,ashan_cn_procurement}"
+: "${SITE_AUTO_MIGRATE:=1}"
 
 # Redis logical DB split (single redis-server, separate logical DBs)
 : "${REDIS_CACHE_DB:=0}"
@@ -21,6 +23,7 @@ set -euo pipefail
 
 # envsubst only reads *exported* environment variables
 export SITE_NAME ADMIN_PASSWORD MARIADB_ROOT_PASSWORD MARIADB_USER_HOST_LOGIN_SCOPE
+export MARIADB_READY_TIMEOUT_SECONDS SITE_INSTALL_APPS SITE_AUTO_MIGRATE
 export REDIS_CACHE_DB REDIS_QUEUE_DB REDIS_SOCKETIO_DB
 export FRAPPE_SITE_NAME_HEADER BACKEND SOCKETIO
 
@@ -58,7 +61,29 @@ bootstrap_sites_volume() {
 
   chown -R frappe:frappe "$dst" || true
 }
+
+ensure_bundled_app_metadata() {
+  local dst=/home/frappe/frappe-bench/sites
+  local src=/opt/sites-skel
+  local app_name="ashan_cn_procurement"
+
+  mkdir -p "$dst/assets"
+
+  if [ -f "$dst/apps.txt" ] && ! grep -qx "$app_name" "$dst/apps.txt"; then
+    echo "[aio] Appending bundled app to sites/apps.txt: ${app_name}"
+    printf '%s\n' "$app_name" >> "$dst/apps.txt"
+  fi
+
+  if [ -e "$src/assets/$app_name" ]; then
+    echo "[aio] Syncing bundled assets for ${app_name}"
+    rm -rf "$dst/assets/$app_name"
+    cp -a "$src/assets/$app_name" "$dst/assets/$app_name"
+  fi
+
+  chown -R frappe:frappe "$dst" || true
+}
 bootstrap_sites_volume
+ensure_bundled_app_metadata
 
 # Initialize MariaDB datadir if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
@@ -120,6 +145,7 @@ if [ ! -f "${SITES_DIR}/apps.txt" ]; then
   cat >"${SITES_DIR}/apps.txt" <<'EOF'
 frappe
 erpnext
+ashan_cn_procurement
 EOF
   chown frappe:frappe "${SITES_DIR}/apps.txt" || true
 fi
@@ -280,6 +306,41 @@ su - frappe -c "cd /home/frappe/frappe-bench && \
   bench set-config -g redis_socketio 'redis://127.0.0.1:6379/${REDIS_SOCKETIO_DB}' && \
   bench set-config -gp socketio_port 9000" || true
 
+ensure_site_apps() {
+  local site_name="$1"
+  local raw_apps="${SITE_INSTALL_APPS}"
+  local installed_apps
+
+  installed_apps=$(su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' list-apps" | tr -d '\r' || true)
+
+  IFS=',' read -r -a requested_apps <<< "$raw_apps"
+  for app in "${requested_apps[@]}"; do
+    app="${app// /}"
+    [ -z "$app" ] && continue
+
+    if printf '%s\n' "$installed_apps" | grep -qx "$app"; then
+      echo "[aio] Site ${site_name} already has app: ${app}"
+      continue
+    fi
+
+    echo "[aio] Installing missing app on ${site_name}: ${app}"
+    su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' install-app '${app}'"
+    installed_apps=$(printf '%s\n%s\n' "$installed_apps" "$app")
+  done
+}
+
+run_site_migrate() {
+  local site_name="$1"
+
+  if [ "$SITE_AUTO_MIGRATE" != "1" ]; then
+    echo "[aio] SITE_AUTO_MIGRATE=${SITE_AUTO_MIGRATE}; skipping bench migrate"
+    return
+  fi
+
+  echo "[aio] Running bench migrate for ${site_name}"
+  su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' migrate"
+}
+
 # Create site if missing
 if [ ! -d "/home/frappe/frappe-bench/sites/${SITE_NAME}" ]; then
   echo "[aio] Creating site: ${SITE_NAME}"
@@ -292,6 +353,9 @@ if [ ! -d "/home/frappe/frappe-bench/sites/${SITE_NAME}" ]; then
 else
   echo "[aio] Site exists: ${SITE_NAME}"
 fi
+
+ensure_site_apps "${SITE_NAME}"
+run_site_migrate "${SITE_NAME}"
 
 # Start ERPNext processes
 supervisorctl start backend websocket worker scheduler nginx

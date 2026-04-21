@@ -1,0 +1,3 @@
+recursive-include ashan_cn_procurement *.css *.csv *.html *.ico *.js *.json *.md *.png *.py *.svg *.txt
+include package.json
+include license.txt
