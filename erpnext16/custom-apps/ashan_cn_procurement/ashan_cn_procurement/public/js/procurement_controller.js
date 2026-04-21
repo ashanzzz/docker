@@ -16,7 +16,10 @@
   const fallbackModeOrder = ["net_rate", "gross_rate", "net_amount", "gross_amount"];
 
   function flt(value, precision) {
-    return frappe.utils.flt(value || 0, precision);
+    if (typeof globalThis.flt === "function") {
+      return globalThis.flt(value || 0, precision);
+    }
+    return Number.parseFloat(value || 0).toFixed(precision ?? 2) * 1;
   }
 
   function hasValue(value) {
