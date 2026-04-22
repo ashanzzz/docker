@@ -4,6 +4,7 @@
 
 ## 文档入口
 
+- **统一开发规范**：[`erpnext16/docs/standards/erpnext16-customization-standard.md`](../../docs/standards/erpnext16-customization-standard.md)
 - **用户 / 管理员操作说明**：[`erpnext16/docs/guides/erpnext16-cn-procurement-user-guide.md`](../../docs/guides/erpnext16-cn-procurement-user-guide.md)
 - 默认业务日期与明细列宽实施计划：[`erpnext16/docs/plans/2026-04-22-phase2-default-date-and-grid-width.md`](../../docs/plans/2026-04-22-phase2-default-date-and-grid-width.md)
 - 发票类型 VAT 规则 + 报销单实施计划：[`erpnext16/docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md`](../../docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md)

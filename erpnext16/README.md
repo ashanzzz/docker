@@ -43,6 +43,10 @@
 
 ## 业务功能改造文档
 
+如果你要先看这套 ERPNext16 定制以后统一遵循的开发规范，请先看：
+
+- [ERPNext16 定制开发统一规范](docs/standards/erpnext16-customization-standard.md)
+
 如果你要看这套 ERPNext16 在业务层面做了哪些中国式采购 / 报销增强、用户应该怎么操作、管理员应该如何配置，请直接看：
 
 - [ERPNext16 中国式采购 / 报销改造说明](docs/guides/erpnext16-cn-procurement-user-guide.md)
