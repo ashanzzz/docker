@@ -41,6 +41,20 @@
 
 ---
 
+## 业务功能改造文档
+
+如果你要看这套 ERPNext16 在业务层面做了哪些中国式采购 / 报销增强、用户应该怎么操作、管理员应该如何配置，请直接看：
+
+- [ERPNext16 中国式采购 / 报销改造说明](docs/guides/erpnext16-cn-procurement-user-guide.md)
+
+如果你要看更细的实施与架构拆解，再继续看：
+
+- `docs/plans/2026-04-22-phase2-default-date-and-grid-width.md`
+- `docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md`
+- `docs/plans/2026-04-22-phase4c-restricted-doc-final-architecture.md`
+
+---
+
 ## `image/` 目录还保留着什么
 
 `image/` 现在**不是独立部署方案**。
