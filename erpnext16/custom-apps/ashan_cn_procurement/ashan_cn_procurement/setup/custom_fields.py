@@ -100,6 +100,7 @@ def procurement_parent_fields(doctype: str, insert_after: str) -> list[dict[str,
                 "fieldtype": "Select",
                 "options": INVOICE_TYPE_OPTIONS,
                 "insert_after": "custom_biz_mode",
+                "reqd": 1,
                 "allow_on_submit": 1,
             }
         )

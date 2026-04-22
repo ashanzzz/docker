@@ -1,0 +1,101 @@
+{
+ "actions": [],
+ "creation": "2026-04-22 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_name",
+  "custom_spec_model",
+  "qty",
+  "uom",
+  "rate",
+  "amount",
+  "custom_line_remark",
+  "invoice_no",
+  "supplier",
+  "source_pi",
+  "source_pi_item"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "物料名称",
+   "reqd": 1
+  },
+  {
+   "fieldname": "custom_spec_model",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "规格参数"
+  },
+  {
+   "default": "1",
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "数量"
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "单位",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "报销单价"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "报销金额"
+  },
+  {
+   "fieldname": "custom_line_remark",
+   "fieldtype": "Data",
+   "label": "备注"
+  },
+  {
+   "fieldname": "invoice_no",
+   "fieldtype": "Data",
+   "label": "发票号"
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "供应商",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "source_pi",
+   "fieldtype": "Link",
+   "label": "来源采购发票",
+   "options": "Purchase Invoice"
+  },
+  {
+   "fieldname": "source_pi_item",
+   "fieldtype": "Data",
+   "label": "来源采购发票明细"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-22 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Ashan CN Procurement",
+ "name": "Reimbursement Invoice Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "quick_entry": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

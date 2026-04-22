@@ -1,10 +1,12 @@
 from ashan_cn_procurement.setup.custom_fields import ensure_custom_fields
 from ashan_cn_procurement.setup.property_setters import ensure_property_setters
+from ashan_cn_procurement.setup.roles import ensure_roles
 
 
 def apply_customizations() -> None:
     ensure_custom_fields()
     ensure_property_setters()
+    ensure_roles()
 
 
 def after_install() -> None:

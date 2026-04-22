@@ -45,14 +45,14 @@
 - 宽度支持任意正整数，不受 Customize Form 常见 1-10 限制
 
 ### 采购发票发票类型 + VAT 规则
-- `Purchase Invoice` 增加 `custom_invoice_type`
+- `Purchase Invoice` 增加 `custom_invoice_type`，并要求先选发票类型
 - 支持：
   - `专用发票`
   - `普通发票`
   - `无发票`
 - `专用发票` 税额桥接到可抵扣 VAT
 - `普通发票 / 无发票` 不进入可抵扣 VAT
-- `无发票` 前端联动 `bill_no = 0`
+- `无发票` 时 `bill_no` 留空，不再写 `0`
 
 ### 报销单体系
 - 新增：
