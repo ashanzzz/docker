@@ -187,6 +187,11 @@ v1 先实现：
 | `recharge_amount` | 充值金额 | Currency | 必填 |
 | `bonus_amount` | 赠送金额 | Currency | 可选 |
 | `effective_amount` | 实际入卡金额 | Currency (Read Only) | = 充值 + 赠送 |
+| `invoiceable_ratio` | 可开票比例 | Percent (Read Only) | = recharge_amount / effective_amount |
+| `discount_ratio` | 优惠比例 | Percent (Read Only) | = bonus_amount / effective_amount |
+| `discount_code` | 优惠码 | Data | 可选，记录油司给出的优惠标识 |
+| `discount_rate_display` | 发票显示优惠率 | Percent | 可选，抄录实际发票显示值 |
+| `discount_note` | 优惠说明 | Small Text | 可选，记录“充4000送200”等规则 |
 | `mode_of_payment` | 付款方式 | Link -> Mode of Payment | 可选 |
 | `payment_entry` | 付款单 | Link -> Payment Entry | 可选 |
 | `reference_no` | 外部流水号 | Data | 可选 |
@@ -196,8 +201,58 @@ v1 先实现：
 ### 核心规则
 - `supplier` 默认取油卡售油公司
 - `effective_amount = recharge_amount + bonus_amount`
+- `invoiceable_ratio = recharge_amount / effective_amount`
+- `discount_ratio = bonus_amount / effective_amount`
 - 提交后增加 `Oil Card.current_balance`
 - 若已关联 `Payment Entry`，则不重复生成付款
+
+### 针对“充 4000 送 200，发票不能按 4200 直接开”的最省事处理
+这类场景最怕用户每次自己手算。
+
+**推荐最省事、也最不容易错的方式：系统自动按充值池比例分摊。**
+
+也就是：
+- 用户只录：
+  - `recharge_amount = 4000`
+  - `bonus_amount = 200`
+- 系统自动得到：
+  - `effective_amount = 4200`
+  - `invoiceable_ratio = 4000 / 4200`
+  - `discount_ratio = 200 / 4200`
+
+之后每次加油时：
+- 卡里真实扣减仍按 `amount`
+- 但系统在后台自动拆出：
+  - 其中多少属于“可开票金额”
+  - 其中多少属于“优惠分摊金额”
+
+这样用户不用自己算“这次 3000 里到底有多少能开票”。
+
+### 为什么不建议人工每次填优惠比例
+因为一张卡可能有：
+- 多次充值
+- 不同充值活动
+- 不同优惠比例
+
+如果人工在开票时再算：
+- 容易错
+- 对账麻烦
+- 后面很难解释为什么某张发票是这个金额
+
+所以最简单的用户操作，其实是：
+**前台少填，后台自动分摊。**
+
+### v1 建议的后台规则
+- 每次充值形成一个“充值池”
+- 每次加油按 **FIFO** 依次消耗最早未用完的充值池
+- 系统自动把本次加油金额拆成：
+  - `invoiceable_basis_amount`（本次可开票金额）
+  - `allocated_discount_amount`（本次分摊优惠金额）
+
+这样以后开票时：
+- 开票金额按 `invoiceable_basis_amount` 汇总
+- 优惠金额按 `allocated_discount_amount` 汇总
+- 如果实际发票上有“优惠码 / 优惠率”，只需要补录显示信息，不需要重算业务金额
 
 ### List View 建议列
 - 日期
@@ -233,6 +288,8 @@ v1 先实现：
 | `liters` | 升数 | Float | 必填 |
 | `amount` | 金额 | Currency | 必填 |
 | `unit_price` | 单价 | Currency (Read Only) | 自动计算 |
+| `invoiceable_basis_amount` | 可开票金额 | Currency (Read Only) | 系统按充值池自动分摊 |
+| `allocated_discount_amount` | 分摊优惠金额 | Currency (Read Only) | = amount - invoiceable_basis_amount |
 | `previous_liters` | 上次加油升数 | Float (Read Only) | 自动带出 |
 | `previous_refuel_date` | 上次加油日期 | Date (Read Only) | 自动带出 |
 | `km_per_liter` | 每升行驶公里 | Float (Read Only) | 可选计算 |
@@ -260,6 +317,9 @@ v1 先实现：
 4. 扣减油卡余额
 5. 更新车辆最近加油信息字段
 6. 更新油卡待开票金额
+7. 若命中带赠送金额的充值池，自动回写：
+   - `invoiceable_basis_amount`
+   - `allocated_discount_amount`
 
 ### 必须做的校验
 - 当前里程不能小于上次里程
@@ -300,6 +360,10 @@ v1 先实现：
 | `invoice_type` | 发票类型 | Select | 复用 `专用发票 / 普通发票 / 无发票` |
 | `custom_biz_mode` | 业务模式 | Select | v1 建议默认 `月结补录` |
 | `total_amount` | 本次开票金额 | Currency (Read Only) | 汇总子表 |
+| `discount_total_amount` | 本次优惠金额 | Currency (Read Only) | 汇总子表分摊优惠 |
+| `discount_code` | 优惠码 | Data | 可选，抄录实际发票/油司信息 |
+| `discount_rate_display` | 发票显示优惠率 | Percent | 可选，抄录实际发票显示值 |
+| `discount_note` | 优惠说明 | Small Text | 可选 |
 | `purchase_invoice` | 采购发票 | Link -> Purchase Invoice | 生成后回写 |
 | `status` | 状态 | Select | Draft / Invoiced / Cancelled |
 | `remark` | 备注 | Small Text | 说明 |
@@ -312,6 +376,8 @@ v1 先实现：
 | `vehicle` | 车辆 | Link -> Vehicle | 冗余快照，便于看 |
 | `posting_date` | 加油日期 | Date | 快照 |
 | `amount` | 原始金额 | Currency | 快照 |
+| `invoiceable_basis_amount` | 可开票金额 | Currency | 快照 |
+| `discount_amount_this_time` | 本次优惠金额 | Currency | 快照/自动汇总 |
 | `already_invoiced_amount` | 已开票金额 | Currency | 快照 |
 | `invoice_amount_this_time` | 本次开票金额 | Currency | 用户可改，默认取未开票 |
 | `remaining_uninvoiced_amount` | 本次后剩余未开票 | Currency (Read Only) | 自动算 |
@@ -338,6 +404,32 @@ v1 先实现：
 - 发票金额与实际记录金额暂不完全一致
 
 v1 即使默认整额开票，也建议结构先支持部分金额开票。
+
+### 有优惠码 / 优惠率时怎么处理最省事
+我建议分两层：
+
+#### 第一层：系统计算层
+真正影响金额的，只认：
+- `invoiceable_basis_amount`
+- `allocated_discount_amount`
+
+#### 第二层：票面展示层
+发票上如果出现：
+- 优惠码
+- 优惠百分比
+- 其他营销说明
+
+这些字段只作为：
+- 追溯
+- 对账
+- 打印/备注参考
+
+不作为系统主金额计算的唯一依据。
+
+这样最省事，因为：
+- 算账靠系统结构字段
+- 票面文字只做补充说明
+- 不会因为不同油司打印格式不同，把核心逻辑搞乱
 
 ---
 
@@ -552,6 +644,20 @@ v1 可采用：
 建议按以下汇总：
 
 `所有已提交加油记录的 uninvoiced_amount 之和`
+
+## 2.1 如果存在充值赠送，未开票金额按什么口径走
+### 建议拆成两个口径
+- `consumed_amount`：真实加油消耗金额（卡资金消耗）
+- `invoiceable_basis_amount`：可用于开票的金额
+
+在有“充 4000 送 200”这类活动时：
+- `consumed_amount` 仍按 4200 体系使用
+- `invoiceable_basis_amount` 只按 4000 对应比例累计
+
+这样：
+- 卡余额对得上
+- 发票金额也对得上
+- 优惠部分不会误进可开票金额
 
 ## 3. `Oil Card Refuel Log.invoice_status`
 规则：
