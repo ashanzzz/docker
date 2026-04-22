@@ -12,6 +12,7 @@
 - 油卡管理可实施计划：[`erpnext16/docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md`](../../docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md)
 - 油卡管理字段清单：[`erpnext16/docs/plans/2026-04-22-phase5c-oil-card-field-checklist.md`](../../docs/plans/2026-04-22-phase5c-oil-card-field-checklist.md)
 - 油卡管理表单布局稿：[`erpnext16/docs/plans/2026-04-22-phase5d-oil-card-form-layout-draft.md`](../../docs/plans/2026-04-22-phase5d-oil-card-form-layout-draft.md)
+- 油卡管理 DocType JSON 顺序稿：[`erpnext16/docs/plans/2026-04-22-phase5e-oil-card-doctype-json-order-draft.md`](../../docs/plans/2026-04-22-phase5e-oil-card-doctype-json-order-draft.md)
 
 ## 当前已落地能力
 
