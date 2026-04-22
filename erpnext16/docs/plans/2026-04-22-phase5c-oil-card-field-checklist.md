@@ -5,6 +5,7 @@
 > **Related:**
 > - `docs/plans/2026-04-22-phase5-oil-card-management.md`：业务研究稿
 > - `docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md`：实施计划与报表/工作台设计
+> - `docs/plans/2026-04-22-phase5d-oil-card-form-layout-draft.md`：表单布局稿
 > - `docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md`：报销单与采购发票主线设计
 
 **Goal:** 把油卡管理与报销人扩展进一步细化到字段级别，明确每个 DocType 的字段名、标签、类型、是否必填、默认值/联动规则、只读逻辑、表单分区和列表展示建议，方便后续直接进入开发实施。

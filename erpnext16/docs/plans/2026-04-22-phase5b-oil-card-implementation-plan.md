@@ -5,6 +5,7 @@
 > **Related:**
 > - `docs/plans/2026-04-22-phase5-oil-card-management.md`：业务研究稿
 > - `docs/plans/2026-04-22-phase5c-oil-card-field-checklist.md`：字段清单版
+> - `docs/plans/2026-04-22-phase5d-oil-card-form-layout-draft.md`：表单布局稿
 >
 > **For Hermes:** 后续如果要开始实现，优先按本文的“主数据 / 交易单据 / 批次开票 / 报表工作台”分层推进，不要为了省事把充值、加油、开票都塞进同一个 DocType。
 

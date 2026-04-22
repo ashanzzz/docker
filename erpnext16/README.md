@@ -55,6 +55,7 @@
 - `docs/plans/2026-04-22-phase5-oil-card-management.md`
 - `docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md`
 - `docs/plans/2026-04-22-phase5c-oil-card-field-checklist.md`
+- `docs/plans/2026-04-22-phase5d-oil-card-form-layout-draft.md`
 
 ---
 
