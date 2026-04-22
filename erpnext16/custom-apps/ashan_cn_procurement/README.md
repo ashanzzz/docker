@@ -8,6 +8,8 @@
 - 默认业务日期与明细列宽实施计划：[`erpnext16/docs/plans/2026-04-22-phase2-default-date-and-grid-width.md`](../../docs/plans/2026-04-22-phase2-default-date-and-grid-width.md)
 - 发票类型 VAT 规则 + 报销单实施计划：[`erpnext16/docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md`](../../docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md)
 - 受限单据最终架构：[`erpnext16/docs/plans/2026-04-22-phase4c-restricted-doc-final-architecture.md`](../../docs/plans/2026-04-22-phase4c-restricted-doc-final-architecture.md)
+- 油卡管理研究稿：[`erpnext16/docs/plans/2026-04-22-phase5-oil-card-management.md`](../../docs/plans/2026-04-22-phase5-oil-card-management.md)
+- 油卡管理可实施计划：[`erpnext16/docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md`](../../docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md)
 
 ## 当前已落地能力
 

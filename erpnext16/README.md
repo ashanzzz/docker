@@ -52,6 +52,8 @@
 - `docs/plans/2026-04-22-phase2-default-date-and-grid-width.md`
 - `docs/plans/2026-04-22-phase3-invoice-type-vat-and-reimbursement.md`
 - `docs/plans/2026-04-22-phase4c-restricted-doc-final-architecture.md`
+- `docs/plans/2026-04-22-phase5-oil-card-management.md`
+- `docs/plans/2026-04-22-phase5b-oil-card-implementation-plan.md`
 
 ---
 
