@@ -9,11 +9,11 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-DOCTYPE_ROOT = APP_ROOT / "ashan_cn_procurement" / "doctype"
+RUNTIME_DOCTYPE_ROOT = APP_ROOT / "ashan_cn_procurement" / "ashan_cn_procurement" / "doctype"
 
 
 def load_doctype_json(name: str) -> dict:
-    path = DOCTYPE_ROOT / name / f"{name}.json"
+    path = RUNTIME_DOCTYPE_ROOT / name / f"{name}.json"
     return json.loads(path.read_text())
 
 

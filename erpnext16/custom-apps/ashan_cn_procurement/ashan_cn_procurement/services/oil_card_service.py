@@ -19,7 +19,7 @@ def get_oil_card_context(oil_card_name: str) -> dict[str, Any]:
     return frappe.db.get_value(
         "Oil Card",
         oil_card_name,
-        ["name", "company", "supplier", "default_vehicle", "status"],
+        ["name", "company", "supplier", "default_vehicle", "status", "current_balance"],
         as_dict=True,
     ) or {}
 

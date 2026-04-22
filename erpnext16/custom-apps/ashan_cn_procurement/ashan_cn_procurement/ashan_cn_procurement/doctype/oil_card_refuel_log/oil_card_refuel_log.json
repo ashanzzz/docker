@@ -1,0 +1,372 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-04-22 22:40:00.000000",
+ "doctype": "DocType",
+ "document_type": "Transaction",
+ "engine": "InnoDB",
+ "field_order": [
+  "sb_basic_info",
+  "naming_series",
+  "company",
+  "oil_card",
+  "vehicle",
+  "cb_basic_info_right",
+  "posting_date",
+  "supplier",
+  "station_name",
+  "fuel_grade",
+  "sb_vehicle_meter",
+  "odometer",
+  "previous_odometer",
+  "distance_since_last",
+  "cb_vehicle_meter_right",
+  "previous_refuel_date",
+  "previous_liters",
+  "vehicle_history_html",
+  "sb_amount_info",
+  "liters",
+  "amount",
+  "unit_price",
+  "cb_amount_info_right",
+  "km_per_liter",
+  "liter_per_100km",
+  "sb_invoice_info",
+  "invoiceable_basis_amount",
+  "allocated_discount_amount",
+  "cb_invoice_info_right",
+  "invoiced_amount",
+  "uninvoiced_amount",
+  "invoice_status",
+  "sb_business_info",
+  "driver_employee",
+  "route_or_purpose",
+  "cb_business_info_right",
+  "receipt_no",
+  "attachment",
+  "remark"
+ ],
+ "fields": [
+  {
+   "fieldname": "sb_basic_info",
+   "fieldtype": "Section Break",
+   "label": "基本信息"
+  },
+  {
+   "default": "OCRL-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "编号规则",
+   "options": "OCRL-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "公司",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "oil_card",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "油卡",
+   "options": "Oil Card",
+   "reqd": 1
+  },
+  {
+   "fieldname": "vehicle",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "车辆",
+   "options": "Vehicle",
+   "reqd": 1
+  },
+  {
+   "fieldname": "cb_basic_info_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "加油日期",
+   "reqd": 1
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "售油公司",
+   "options": "Supplier",
+   "reqd": 1
+  },
+  {
+   "fieldname": "station_name",
+   "fieldtype": "Data",
+   "label": "加油站点"
+  },
+  {
+   "fieldname": "fuel_grade",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "油号",
+   "options": "92\n95\n98\n0#\n-10#\n汽油\n柴油",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sb_vehicle_meter",
+   "fieldtype": "Section Break",
+   "label": "车辆与里程"
+  },
+  {
+   "fieldname": "odometer",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "当前里程",
+   "reqd": 1
+  },
+  {
+   "fieldname": "previous_odometer",
+   "fieldtype": "Int",
+   "label": "上次里程",
+   "read_only": 1
+  },
+  {
+   "fieldname": "distance_since_last",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "本次行驶里程",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_vehicle_meter_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "previous_refuel_date",
+   "fieldtype": "Date",
+   "label": "上次加油日期",
+   "read_only": 1
+  },
+  {
+   "fieldname": "previous_liters",
+   "fieldtype": "Float",
+   "label": "上次加油升数",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:!!doc.vehicle",
+   "fieldname": "vehicle_history_html",
+   "fieldtype": "HTML",
+   "label": "车辆历史提示"
+  },
+  {
+   "fieldname": "sb_amount_info",
+   "fieldtype": "Section Break",
+   "label": "油量与金额"
+  },
+  {
+   "fieldname": "liters",
+   "fieldtype": "Float",
+   "label": "升数",
+   "reqd": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "金额",
+   "reqd": 1
+  },
+  {
+   "fieldname": "unit_price",
+   "fieldtype": "Currency",
+   "label": "单价",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_amount_info_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "km_per_liter",
+   "fieldtype": "Float",
+   "label": "每升行驶公里",
+   "read_only": 1
+  },
+  {
+   "fieldname": "liter_per_100km",
+   "fieldtype": "Float",
+   "label": "百公里油耗",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_invoice_info",
+   "fieldtype": "Section Break",
+   "label": "开票与优惠分摊"
+  },
+  {
+   "fieldname": "invoiceable_basis_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "可开票金额",
+   "read_only": 1
+  },
+  {
+   "fieldname": "allocated_discount_amount",
+   "fieldtype": "Currency",
+   "label": "分摊优惠金额",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_invoice_info_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "invoiced_amount",
+   "fieldtype": "Currency",
+   "label": "已开票金额",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "uninvoiced_amount",
+   "fieldtype": "Currency",
+   "label": "未开票金额",
+   "read_only": 1
+  },
+  {
+   "default": "未开票",
+   "fieldname": "invoice_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "开票状态",
+   "options": "未开票\n部分开票\n已开票",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_business_info",
+   "fieldtype": "Section Break",
+   "label": "业务补充信息"
+  },
+  {
+   "fieldname": "driver_employee",
+   "fieldtype": "Link",
+   "label": "司机/员工",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "route_or_purpose",
+   "fieldtype": "Small Text",
+   "label": "用途/路线"
+  },
+  {
+   "fieldname": "cb_business_info_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "receipt_no",
+   "fieldtype": "Data",
+   "label": "小票号"
+  },
+  {
+   "fieldname": "attachment",
+   "fieldtype": "Attach",
+   "label": "附件"
+  },
+  {
+   "fieldname": "remark",
+   "fieldtype": "Small Text",
+   "label": "备注"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-04-22 22:40:00.000000",
+ "modified_by": "Administrator",
+ "module": "Ashan CN Procurement",
+ "name": "Oil Card Refuel Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "cancel": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase Manager",
+   "share": 1,
+   "submit": 1,
+   "cancel": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase User",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "submit": 1,
+   "cancel": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 0,
+ "search_fields": "vehicle,oil_card,receipt_no,station_name",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "vehicle",
+ "track_changes": 1
+}
