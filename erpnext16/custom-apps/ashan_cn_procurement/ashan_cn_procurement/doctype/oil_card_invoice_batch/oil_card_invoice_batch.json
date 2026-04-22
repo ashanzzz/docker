@@ -1,0 +1,259 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-04-22 22:45:00.000000",
+ "doctype": "DocType",
+ "document_type": "Transaction",
+ "engine": "InnoDB",
+ "field_order": [
+  "sb_scope_info",
+  "naming_series",
+  "company",
+  "supplier",
+  "oil_card",
+  "from_date",
+  "to_date",
+  "cb_scope_info_right",
+  "status",
+  "purchase_invoice",
+  "total_amount",
+  "discount_total_amount",
+  "sb_invoice_meta",
+  "invoice_type",
+  "custom_biz_mode",
+  "cb_invoice_meta_right",
+  "discount_code",
+  "discount_rate_display",
+  "discount_note",
+  "sb_items",
+  "items",
+  "sb_remark",
+  "remark"
+ ],
+ "fields": [
+  {
+   "fieldname": "sb_scope_info",
+   "fieldtype": "Section Break",
+   "label": "基本信息"
+  },
+  {
+   "default": "OCIB-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "编号规则",
+   "options": "OCIB-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "公司",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "售油公司",
+   "options": "Supplier",
+   "reqd": 1
+  },
+  {
+   "fieldname": "oil_card",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "油卡",
+   "options": "Oil Card"
+  },
+  {
+   "fieldname": "from_date",
+   "fieldtype": "Date",
+   "in_standard_filter": 1,
+   "label": "开票起始日期"
+  },
+  {
+   "fieldname": "to_date",
+   "fieldtype": "Date",
+   "in_standard_filter": 1,
+   "label": "开票截止日期"
+  },
+  {
+   "fieldname": "cb_scope_info_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "状态",
+   "options": "Draft\nInvoiced\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "purchase_invoice",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "采购发票",
+   "options": "Purchase Invoice",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "total_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "本次开票金额",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "discount_total_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "本次优惠金额",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_invoice_meta",
+   "fieldtype": "Section Break",
+   "label": "发票信息"
+  },
+  {
+   "fieldname": "invoice_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "发票类型",
+   "options": "专用发票\n普通发票\n无发票",
+   "reqd": 1
+  },
+  {
+   "default": "月结补录",
+   "fieldname": "custom_biz_mode",
+   "fieldtype": "Select",
+   "label": "业务模式",
+   "options": "采购申请\n报销申请\n电汇申请\n月结补录",
+   "reqd": 1
+  },
+  {
+   "fieldname": "cb_invoice_meta_right",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "discount_code",
+   "fieldtype": "Data",
+   "label": "优惠码"
+  },
+  {
+   "fieldname": "discount_rate_display",
+   "fieldtype": "Percent",
+   "label": "发票显示优惠率"
+  },
+  {
+   "fieldname": "discount_note",
+   "fieldtype": "Small Text",
+   "label": "优惠说明"
+  },
+  {
+   "fieldname": "sb_items",
+   "fieldtype": "Section Break",
+   "label": "开票记录"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "开票记录",
+   "options": "Oil Card Invoice Batch Item"
+  },
+  {
+   "fieldname": "sb_remark",
+   "fieldtype": "Section Break",
+   "label": "备注"
+  },
+  {
+   "fieldname": "remark",
+   "fieldtype": "Small Text",
+   "label": "备注"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-22 22:45:00.000000",
+ "modified_by": "Administrator",
+ "module": "Ashan CN Procurement",
+ "name": "Oil Card Invoice Batch",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 0,
+ "search_fields": "supplier,oil_card,purchase_invoice,discount_code",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "supplier",
+ "track_changes": 1
+}
