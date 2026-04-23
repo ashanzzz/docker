@@ -20,6 +20,11 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 2; };
 need docker
 need base64
 
+FETCH_SCRIPT="$DIR/../scripts/fetch-private-customizations.sh"
+if [[ -f "$FETCH_SCRIPT" ]]; then
+  bash "$FETCH_SCRIPT"
+fi
+
 if [[ ! -f "$APPS_JSON_PATH" ]]; then
   echo "ERROR: apps.json not found: $APPS_JSON_PATH" >&2
   exit 2

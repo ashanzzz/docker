@@ -1,1 +1,0 @@
-"""Restricted Access Group package."""

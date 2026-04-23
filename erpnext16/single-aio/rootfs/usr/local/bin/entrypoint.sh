@@ -3,12 +3,20 @@ set -euo pipefail
 
 # ERPNext16 single-container AIO entrypoint
 
+get_default_site_install_apps() {
+  local apps="erpnext"
+  if [ -d /home/frappe/frappe-bench/apps/ashan_cn_procurement ] || [ -e /opt/sites-skel/assets/ashan_cn_procurement ]; then
+    apps="${apps},ashan_cn_procurement"
+  fi
+  printf '%s' "$apps"
+}
+
 : "${SITE_NAME:=site1.local}"
 : "${ADMIN_PASSWORD:=adminpassword}"
 : "${MARIADB_ROOT_PASSWORD:=mysqlpassword}"
 : "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
 : "${MARIADB_READY_TIMEOUT_SECONDS:=900}"
-: "${SITE_INSTALL_APPS:=erpnext,ashan_cn_procurement}"
+: "${SITE_INSTALL_APPS:=$(get_default_site_install_apps)}"
 : "${SITE_AUTO_MIGRATE:=1}"
 
 # Redis logical DB split (single redis-server, separate logical DBs)
@@ -66,6 +74,10 @@ ensure_bundled_app_metadata() {
   local dst=/home/frappe/frappe-bench/sites
   local src=/opt/sites-skel
   local app_name="ashan_cn_procurement"
+
+  if [ ! -d "/home/frappe/frappe-bench/apps/${app_name}" ] && [ ! -e "$src/assets/$app_name" ]; then
+    return
+  fi
 
   mkdir -p "$dst/assets"
 
@@ -142,11 +154,13 @@ fi
 # are hidden and bench will crash. Bootstrap minimal required files.
 if [ ! -f "${SITES_DIR}/apps.txt" ]; then
   echo "[aio] Bootstrapping sites/apps.txt..."
-  cat >"${SITES_DIR}/apps.txt" <<'EOF'
-frappe
-erpnext
-ashan_cn_procurement
-EOF
+  {
+    printf 'frappe\n'
+    printf 'erpnext\n'
+    if [ -d /home/frappe/frappe-bench/apps/ashan_cn_procurement ] || [ -e /opt/sites-skel/assets/ashan_cn_procurement ]; then
+      printf 'ashan_cn_procurement\n'
+    fi
+  } >"${SITES_DIR}/apps.txt"
   chown frappe:frappe "${SITES_DIR}/apps.txt" || true
 fi
 

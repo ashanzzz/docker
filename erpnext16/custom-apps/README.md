@@ -1,13 +1,10 @@
-# ERPNext16 local custom apps
+# ERPNext16 custom app staging directory
 
-这个目录放 **和 erpnext16 镜像一起构建** 的本地 custom app 源码。
+这个目录不再保存业务 custom app 的源码主副本。
 
-当前第一个 app：
+它现在只是 **AIO 构建前的暂存目录**：
 
-- `ashan_cn_procurement` — 中国式采购 / 报销改造基础层
+- GitHub Actions 会先从私有仓库 `ashanzzz/erpnext-private-customizations` 拉取 `erpnext16/custom-apps/`
+- 本地手动构建时，可通过 `erpnext16/scripts/fetch-private-customizations.sh` 同步同样内容
 
-设计原则：
-
-1. 业务代码放 app，不直接魔改标准 ERPNext 源码。
-2. AIO 镜像构建时把这里的 app 一起打进去。
-3. 先做稳定的采购明细税额联动基础层，再继续补报销单据与支付联动。
+请不要再把业务代码直接维护在这个仓库里。

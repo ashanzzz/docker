@@ -43,6 +43,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fetch private ERPNext customizations
+        env:
+          PRIVATE_CUSTOM_REPO_TOKEN: ${{ secrets.PRIVATE_CUSTOM_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          chmod +x erpnext16/scripts/fetch-private-customizations.sh
+          bash erpnext16/scripts/fetch-private-customizations.sh
+
       - name: Install jq
         run: |
           sudo apt-get update
