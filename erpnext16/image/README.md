@@ -16,6 +16,13 @@
 
 本仓库不再保存 `ashan_cn_procurement` 源码主副本。
 
+## 同步策略
+
+- GitHub Actions AIO workflow 会在每月定时构建时先拉取私有仓库
+- 私有仓库本身 **不负责** 反向触发 `ashanzzz/docker` 的 build
+- GitHub Actions secret 名称：`PRIVATE_CUSTOM_REPO_PAT`
+- 本地手动构建时继续使用环境变量：`PRIVATE_CUSTOM_REPO_TOKEN`
+
 ## 本地构建
 
 ```bash
