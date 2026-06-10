@@ -42,6 +42,43 @@ chown -R redis:redis /var/lib/redis || true
 ASSET_BUILD_ID_FILE=".asset-build-id"
 ASSET_BUNDLE_REFRESHED=0
 
+print_asset_state() {
+  local label="$1"
+  local root="$2"
+  local build_id_file="$root/$ASSET_BUILD_ID_FILE"
+  local assets_dir="$root/assets"
+  local build_id="missing"
+  local asset_file_count=0
+
+  if [ -f "$build_id_file" ]; then
+    build_id="$(cat "$build_id_file" 2>/dev/null || true)"
+  fi
+
+  if [ -d "$assets_dir" ]; then
+    asset_file_count="$(find "$assets_dir" -type f | wc -l | tr -d ' ')"
+  fi
+
+  echo "[aio] Asset state [$label]: root=$root build_id=$build_id assets_dir=$([ -d "$assets_dir" ] && echo present || echo missing) asset_files=${asset_file_count}"
+  for file in apps.txt apps.json common_site_config.json "$ASSET_BUILD_ID_FILE"; do
+    if [ -e "$root/$file" ]; then
+      echo "[aio] Asset state [$label]: $file present"
+    else
+      echo "[aio] Asset state [$label]: $file missing"
+    fi
+  done
+}
+
+log_login_asset_probe() {
+  echo "[aio] Probing login asset integrity via aio-healthcheck --verbose"
+  if /usr/local/bin/aio-healthcheck.sh --verbose; then
+    echo "[aio] Login asset probe passed"
+  else
+    local rc=$?
+    echo "[aio] Login asset probe failed with exit=${rc}" >&2
+    return "$rc"
+  fi
+}
+
 # If /home/frappe/frappe-bench/sites is mounted as an empty volume, it will hide the
 # image-provided metadata and assets. Bootstrap missing files from /opt/sites-skel.
 bootstrap_sites_volume() {
@@ -113,7 +150,10 @@ clear_site_cache_after_asset_refresh() {
 }
 
 bootstrap_sites_volume
+print_asset_state "image-skel-before-refresh" "/opt/sites-skel"
+print_asset_state "volume-before-refresh" "/home/frappe/frappe-bench/sites"
 refresh_bundled_assets_if_needed
+print_asset_state "volume-after-refresh" "/home/frappe/frappe-bench/sites"
 
 # Initialize MariaDB datadir if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
@@ -392,6 +432,11 @@ clear_site_cache_after_asset_refresh "${SITE_NAME}"
 
 # Start ERPNext processes
 supervisorctl start backend websocket worker scheduler nginx
+
+print_asset_state "runtime-after-services" "/home/frappe/frappe-bench/sites"
+if ! log_login_asset_probe; then
+  echo "[aio] WARNING: login asset probe failed during startup; container stays up for inspection" >&2
+fi
 
 echo "[aio] Ready. ERPNext should be reachable on :8080"
 
