@@ -68,15 +68,15 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
 # Build-time asset manifest used to detect version mismatch at runtime.
-RUN set -eu; \
-    cd /home/frappe/frappe-bench && \
-    {
-      printf '%s\n' "FRAPPE_IMAGE_TAG=${FRAPPE_IMAGE_TAG}" "FRAPPE_BRANCH=${FRAPPE_BRANCH}" "FRAPPE_PATH=${FRAPPE_PATH}"; \
+RUN /bin/sh -lc 'set -eu; \
+    cd /home/frappe/frappe-bench; \
+    { \
+      printf "%s\n" "FRAPPE_IMAGE_TAG=${FRAPPE_IMAGE_TAG}" "FRAPPE_BRANCH=${FRAPPE_BRANCH}" "FRAPPE_PATH=${FRAPPE_PATH}"; \
       sha256sum /home/frappe/frappe-bench/sites/apps.json 2>/dev/null || true; \
-      find sites -maxdepth 1 \( -name 'apps.txt' -o -name 'apps.json' -o -name 'common_site_config.json' \) -type f -exec sha256sum {} + 2>/dev/null || true; \
+      find sites -maxdepth 1 \( -name "apps.txt" -o -name "apps.json" -o -name "common_site_config.json" \) -type f -exec sha256sum {} + 2>/dev/null || true; \
       find sites/assets -type f -exec sha256sum {} + 2>/dev/null || true; \
       if [ -d apps/ashan_cn_procurement ]; then find apps/ashan_cn_procurement -type f -exec sha256sum {} + 2>/dev/null || true; fi; \
-    } | sha256sum | awk '{print $1}' > sites/.asset-build-id
+    } | sha256sum | awk "{print \$1}" > sites/.asset-build-id'
 
 # If users mount an empty sites volume, it would hide the image's default sites files
 # (apps.txt, assets/, etc). Keep a copy outside the volume so entrypoint can bootstrap.
