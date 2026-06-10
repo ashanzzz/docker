@@ -156,6 +156,14 @@ http://<你的Unraid-IP>:6888/login
 
 如果这次升级跨了 ERPNext/Frappe 发布点，建议在站点数据备份完成后，额外执行一次站点升级检查。
 
+这套 AIO 镜像现在会在启动时自动做两件事：
+- 对比镜像内和卷内的 `assets` 版本标识
+- 如果发现不一致，会自动同步资产并清理相关 cache
+
+更详细的设计和实现说明见：`../docs/asset-integrity-aio.md`
+
+所以正常升级路径里，你不需要手工再跑 `bench build` / `clear-cache` / `clear-website-cache`。
+
 最稳妥的做法是：
 - 先在测试环境验证
 - 再升级正式环境

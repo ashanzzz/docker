@@ -39,28 +39,23 @@ mkdir -p /run/mysqld /var/lib/redis /var/log/supervisor
 chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
 chown -R redis:redis /var/lib/redis || true
 
+ASSET_BUILD_ID_FILE=".asset-build-id"
+ASSET_BUNDLE_REFRESHED=0
+
 # If /home/frappe/frappe-bench/sites is mounted as an empty volume, it will hide the
-# default apps.txt + assets/ shipped in the image. Bootstrap missing files from /opt/sites-skel.
+# image-provided metadata and assets. Bootstrap missing files from /opt/sites-skel.
 bootstrap_sites_volume() {
   local dst=/home/frappe/frappe-bench/sites
   local src=/opt/sites-skel
 
   mkdir -p "$dst"
 
-  if [ -f "$src/apps.txt" ] && [ ! -f "$dst/apps.txt" ]; then
-    echo "[aio] Bootstrapping sites/apps.txt"
-    cp -a "$src/apps.txt" "$dst/apps.txt"
-  fi
-
-  if [ -f "$src/apps.json" ] && [ ! -f "$dst/apps.json" ]; then
-    echo "[aio] Bootstrapping sites/apps.json"
-    cp -a "$src/apps.json" "$dst/apps.json"
-  fi
-
-  if [ -f "$src/common_site_config.json" ] && [ ! -f "$dst/common_site_config.json" ]; then
-    echo "[aio] Bootstrapping sites/common_site_config.json"
-    cp -a "$src/common_site_config.json" "$dst/common_site_config.json"
-  fi
+  for file in apps.txt apps.json common_site_config.json "$ASSET_BUILD_ID_FILE"; do
+    if [ -f "$src/$file" ] && [ ! -f "$dst/$file" ]; then
+      echo "[aio] Bootstrapping sites/$file"
+      cp -a "$src/$file" "$dst/$file"
+    fi
+  done
 
   if [ -d "$src/assets" ] && [ ! -d "$dst/assets" ]; then
     echo "[aio] Bootstrapping sites/assets/"
@@ -70,32 +65,55 @@ bootstrap_sites_volume() {
   chown -R frappe:frappe "$dst" || true
 }
 
-ensure_bundled_app_metadata() {
+refresh_bundled_assets_if_needed() {
   local dst=/home/frappe/frappe-bench/sites
   local src=/opt/sites-skel
-  local app_name="ashan_cn_procurement"
+  local src_id="$src/$ASSET_BUILD_ID_FILE"
+  local dst_id="$dst/$ASSET_BUILD_ID_FILE"
 
-  if [ ! -d "/home/frappe/frappe-bench/apps/${app_name}" ] && [ ! -e "$src/assets/$app_name" ]; then
-    return
+  if [ ! -f "$src_id" ]; then
+    echo "[aio] No bundled asset build id found in image; skipping asset refresh"
+    return 0
   fi
 
-  mkdir -p "$dst/assets"
+  if [ ! -f "$dst_id" ] || ! cmp -s "$src_id" "$dst_id" || [ ! -d "$dst/assets" ]; then
+    if [ -f "$dst_id" ]; then
+      echo "[aio] Bundled asset build id changed or assets missing; refreshing assets"
+    else
+      echo "[aio] Bootstrapping bundled assets from image"
+    fi
 
-  if [ -f "$dst/apps.txt" ] && ! grep -qx "$app_name" "$dst/apps.txt"; then
-    echo "[aio] Appending bundled app to sites/apps.txt: ${app_name}"
-    printf '%s\n' "$app_name" >> "$dst/apps.txt"
-  fi
+    rm -rf "$dst/assets"
+    if [ -d "$src/assets" ]; then
+      cp -a "$src/assets" "$dst/assets"
+    fi
 
-  if [ -e "$src/assets/$app_name" ]; then
-    echo "[aio] Syncing bundled assets for ${app_name}"
-    rm -rf "$dst/assets/$app_name"
-    cp -a "$src/assets/$app_name" "$dst/assets/$app_name"
+    for file in apps.txt apps.json common_site_config.json "$ASSET_BUILD_ID_FILE"; do
+      if [ -e "$src/$file" ]; then
+        cp -a "$src/$file" "$dst/$file"
+      fi
+    done
+
+    ASSET_BUNDLE_REFRESHED=1
   fi
 
   chown -R frappe:frappe "$dst" || true
 }
+
+clear_site_cache_after_asset_refresh() {
+  local site_name="$1"
+
+  if [ "$ASSET_BUNDLE_REFRESHED" != "1" ]; then
+    return 0
+  fi
+
+  echo "[aio] Clearing site cache after asset refresh..."
+  su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' clear-cache" || true
+  su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' clear-website-cache" || true
+}
+
 bootstrap_sites_volume
-ensure_bundled_app_metadata
+refresh_bundled_assets_if_needed
 
 # Initialize MariaDB datadir if empty
 if [ ! -d /var/lib/mysql/mysql ]; then
@@ -370,6 +388,7 @@ fi
 
 ensure_site_apps "${SITE_NAME}"
 run_site_migrate "${SITE_NAME}"
+clear_site_cache_after_asset_refresh "${SITE_NAME}"
 
 # Start ERPNext processes
 supervisorctl start backend websocket worker scheduler nginx
