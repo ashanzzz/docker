@@ -48,6 +48,10 @@ RUN export APP_INSTALL_ARGS="" && \
 
 FROM frappe/base:${FRAPPE_IMAGE_TAG} AS aio
 
+ARG FRAPPE_IMAGE_TAG=version-16
+ARG FRAPPE_BRANCH=version-16
+ARG FRAPPE_PATH=https://github.com/frappe/frappe
+
 USER root
 
 # Install services for AIO
@@ -63,6 +67,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 # Copy bench from builder stage
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
+# Build-time asset manifest used to detect version mismatch at runtime.
+RUN /bin/sh -ec "set -eu; cd /home/frappe/frappe-bench; { printf '%s\n' \"FRAPPE_IMAGE_TAG=${FRAPPE_IMAGE_TAG}\" \"FRAPPE_BRANCH=${FRAPPE_BRANCH}\" \"FRAPPE_PATH=${FRAPPE_PATH}\"; sha256sum sites/apps.json 2>/dev/null || true; find sites -maxdepth 1 \( -name 'apps.txt' -o -name 'apps.json' -o -name 'common_site_config.json' \) -type f -exec sha256sum {} + 2>/dev/null || true; find sites/assets -type f -exec sha256sum {} + 2>/dev/null || true; if [ -d apps/ashan_cn_procurement ]; then find apps/ashan_cn_procurement -type f -exec sha256sum {} + 2>/dev/null || true; fi; } | sha256sum | awk '{print \$1}' > sites/.asset-build-id"
+
 # If users mount an empty sites volume, it would hide the image's default sites files
 # (apps.txt, assets/, etc). Keep a copy outside the volume so entrypoint can bootstrap.
 RUN mkdir -p /opt/sites-skel && \
@@ -71,7 +78,7 @@ RUN mkdir -p /opt/sites-skel && \
 
 # AIO rootfs (supervisor configs + entrypoint)
 COPY single-aio/rootfs/ /
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh /usr/local/bin/run-backend.sh /usr/local/bin/run-worker.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh /usr/local/bin/run-backend.sh /usr/local/bin/run-worker.sh /usr/local/bin/aio-healthcheck.sh
 
 # Persistent data
 VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]
@@ -79,7 +86,7 @@ VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
-  CMD curl -fsS http://127.0.0.1:8080/login >/dev/null || exit 1
+  CMD /usr/local/bin/aio-healthcheck.sh
 
 STOPSIGNAL SIGTERM
 
