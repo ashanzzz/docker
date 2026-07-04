@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a custom ERPNext16 image (adds official apps from apps.json + bundled local custom apps)
-# Based on frappe_docker layered Containerfile.
+# Build an ERPNext16 image from local inputs.
+# Official apps come from apps.json; optional local custom apps live under ../custom-apps.
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
@@ -20,10 +20,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 2; };
 need docker
 need base64
 
-FETCH_SCRIPT="$DIR/../scripts/fetch-private-customizations.sh"
-if [[ -f "$FETCH_SCRIPT" ]]; then
-  bash "$FETCH_SCRIPT"
-fi
+mkdir -p "$DIR/../custom-apps"
 
 if [[ ! -f "$APPS_JSON_PATH" ]]; then
   echo "ERROR: apps.json not found: $APPS_JSON_PATH" >&2
@@ -36,6 +33,7 @@ echo "Building custom image: ${IMAGE}:${TAG}"
 echo "FRAPPE_IMAGE_TAG=${FRAPPE_IMAGE_TAG}"
 echo "FRAPPE_BRANCH=${FRAPPE_BRANCH}"
 echo "APPS_JSON_PATH=${APPS_JSON_PATH}"
+echo "CUSTOM_APPS_DIR=${DIR}/../custom-apps"
 
 # Note: this builds from source using frappe/build + frappe/base.
 # Build time can be significant.
