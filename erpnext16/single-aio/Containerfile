@@ -78,7 +78,7 @@ RUN mkdir -p /opt/sites-skel && \
 
 # AIO rootfs (supervisor configs + entrypoint)
 COPY single-aio/rootfs/ /
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh /usr/local/bin/run-backend.sh /usr/local/bin/run-worker.sh /usr/local/bin/aio-healthcheck.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh /usr/local/bin/run-backend.sh /usr/local/bin/run-worker.sh /usr/local/bin/aio-healthcheck.sh /usr/local/bin/run-mariadb.sh /usr/local/bin/run-redis.sh
 
 # Persistent data
 VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]

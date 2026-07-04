@@ -2,6 +2,10 @@
 set -euo pipefail
 
 # ERPNext16 single-container AIO entrypoint
+#
+# Modes:
+#   internal - run bundled MariaDB + Redis + ERPNext services
+#   external - use externally provided DB/Redis and skip bundled DB/Redis supervisors
 
 get_default_site_install_apps() {
   local apps="erpnext"
@@ -11,46 +15,131 @@ get_default_site_install_apps() {
   printf '%s' "$apps"
 }
 
-: "${SITE_NAME:=site1.local}"
-: "${ADMIN_PASSWORD:=adminpassword}"
-: "${MARIADB_ROOT_PASSWORD:=mysqlpassword}"
-: "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"  # Fix auth when client connects as 'localhost'
-: "${MARIADB_READY_TIMEOUT_SECONDS:=900}"
-: "${SITE_INSTALL_APPS:=$(get_default_site_install_apps)}"
-: "${SITE_AUTO_MIGRATE:=1}"
+require_non_empty() {
+  local value="$1"
+  local name="$2"
+  if [ -z "$value" ]; then
+    echo "[aio] Missing required variable: ${name}" >&2
+    exit 1
+  fi
+}
 
-# Redis logical DB split (single redis-server, separate logical DBs)
-: "${REDIS_CACHE_DB:=0}"
-: "${REDIS_QUEUE_DB:=1}"
-: "${REDIS_SOCKETIO_DB:=2}"
+normalize_mode() {
+  local mode
+  mode="$(printf '%s' "${AIO_MODE:-internal}" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    internal|external) printf '%s' "$mode" ;;
+    *)
+      echo "[aio] Unsupported AIO_MODE=${AIO_MODE:-}; expected internal or external" >&2
+      exit 1
+      ;;
+  esac
+}
 
-# nginx-entrypoint.sh expects these; we use local ports
-: "${FRAPPE_SITE_NAME_HEADER:=$SITE_NAME}"
-: "${BACKEND:=127.0.0.1:8000}"
-: "${SOCKETIO:=127.0.0.1:9000}"
+write_common_site_config() {
+  local mode="$1"
+  local config_path=/home/frappe/frappe-bench/sites/common_site_config.json
 
-# envsubst only reads *exported* environment variables
-export SITE_NAME ADMIN_PASSWORD MARIADB_ROOT_PASSWORD MARIADB_USER_HOST_LOGIN_SCOPE
-export MARIADB_READY_TIMEOUT_SECONDS SITE_INSTALL_APPS SITE_AUTO_MIGRATE
-export REDIS_CACHE_DB REDIS_QUEUE_DB REDIS_SOCKETIO_DB
-export FRAPPE_SITE_NAME_HEADER BACKEND SOCKETIO
+  python3 - "$mode" "$config_path" <<'PY'
+import json
+import os
+import pathlib
+import sys
 
-mkdir -p /run/mysqld /var/lib/redis /var/log/supervisor
-chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
-chown -R redis:redis /var/lib/redis || true
+mode = sys.argv[1]
+config_path = pathlib.Path(sys.argv[2])
 
-ASSET_BUILD_ID_FILE=".asset-build-id"
-ASSET_BUNDLE_REFRESHED=0
+def env(name, default=""):
+    return os.environ.get(name, default)
 
-# If /home/frappe/frappe-bench/sites is mounted as an empty volume, it will hide the
-# image-provided metadata and assets. Bootstrap missing files from /opt/sites-skel.
+if config_path.exists():
+    try:
+        data = json.loads(config_path.read_text())
+    except Exception:
+        data = {}
+else:
+    data = {}
+
+if mode == "internal":
+    data.update({
+        "db_host": "127.0.0.1",
+        "db_port": 3306,
+        "redis_cache": f"redis://127.0.0.1:6379/{env('REDIS_CACHE_DB', '0')}",
+        "redis_queue": f"redis://127.0.0.1:6379/{env('REDIS_QUEUE_DB', '1')}",
+        "redis_socketio": f"redis://127.0.0.1:6379/{env('REDIS_SOCKETIO_DB', '2')}",
+        "socketio_port": 9000,
+    })
+    data.pop('db_type', None)
+    data.pop('db_name', None)
+    data.pop('db_socket', None)
+    data.pop('db_user', None)
+    data.pop('db_password', None)
+else:
+    db_name = env('FRAPPE_DB_NAME') or env('SITE_NAME') or env('FRAPPE_DB_USER')
+    data.update({
+        "db_type": env('FRAPPE_DB_TYPE', 'mariadb'),
+        "db_name": db_name,
+        "db_host": env('FRAPPE_DB_HOST'),
+        "db_port": int(env('FRAPPE_DB_PORT') or ('5432' if env('FRAPPE_DB_TYPE', 'mariadb') == 'postgres' else '3306')),
+        "db_user": env('FRAPPE_DB_USER') or db_name,
+        "db_password": env('FRAPPE_DB_PASSWORD'),
+        "redis_cache": env('FRAPPE_REDIS_CACHE'),
+        "redis_queue": env('FRAPPE_REDIS_QUEUE'),
+        "redis_socketio": env('FRAPPE_REDIS_SOCKETIO'),
+        "socketio_port": 9000,
+    })
+    db_socket = env('FRAPPE_DB_SOCKET')
+    if db_socket:
+        data['db_socket'] = db_socket
+    else:
+        data.pop('db_socket', None)
+
+config_path.write_text(json.dumps(data, indent=1, sort_keys=True))
+PY
+}
+
+site_install_apps_resolve() {
+  local raw="${SITE_INSTALL_APPS:-}"
+  if [ -z "$raw" ]; then
+    get_default_site_install_apps
+    return 0
+  fi
+  printf '%s' "$raw"
+}
+
+setup_nginx_config() {
+  if [ -f /templates/nginx/frappe.conf.template ]; then
+    echo "[aio] Generating nginx config..."
+    : "${UPSTREAM_REAL_IP_ADDRESS:=127.0.0.1}"
+    : "${UPSTREAM_REAL_IP_HEADER:=X-Forwarded-For}"
+    : "${UPSTREAM_REAL_IP_RECURSIVE:=off}"
+    : "${PROXY_READ_TIMEOUT:=120}"
+    : "${CLIENT_MAX_BODY_SIZE:=50m}"
+
+    export UPSTREAM_REAL_IP_ADDRESS UPSTREAM_REAL_IP_HEADER UPSTREAM_REAL_IP_RECURSIVE PROXY_READ_TIMEOUT CLIENT_MAX_BODY_SIZE
+
+    mkdir -p /etc/nginx/conf.d
+    envsubst '${BACKEND}
+${SOCKETIO}
+${UPSTREAM_REAL_IP_ADDRESS}
+${UPSTREAM_REAL_IP_HEADER}
+${UPSTREAM_REAL_IP_RECURSIVE}
+${FRAPPE_SITE_NAME_HEADER}
+${PROXY_READ_TIMEOUT}
+${CLIENT_MAX_BODY_SIZE}'       </templates/nginx/frappe.conf.template >/etc/nginx/conf.d/frappe.conf
+
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+  fi
+}
+
 bootstrap_sites_volume() {
   local dst=/home/frappe/frappe-bench/sites
   local src=/opt/sites-skel
+  local asset_build_id_file=.asset-build-id
 
   mkdir -p "$dst"
 
-  for file in apps.txt apps.json common_site_config.json "$ASSET_BUILD_ID_FILE"; do
+  for file in apps.txt apps.json common_site_config.json "$asset_build_id_file"; do
     if [ -f "$src/$file" ] && [ ! -f "$dst/$file" ]; then
       echo "[aio] Bootstrapping sites/$file"
       cp -a "$src/$file" "$dst/$file"
@@ -65,11 +154,57 @@ bootstrap_sites_volume() {
   chown -R frappe:frappe "$dst" || true
 }
 
+ensure_sites_dir_permissions() {
+  local sites_dir=/home/frappe/frappe-bench/sites
+  if ! su - frappe -c "test -w '${sites_dir}'" >/dev/null 2>&1; then
+    echo "[aio] Fixing permissions for sites volume..."
+    chown -R frappe:frappe "$sites_dir" || true
+    chmod 775 "$sites_dir" || true
+  fi
+}
+
+write_default_sites_metadata() {
+  local sites_dir=/home/frappe/frappe-bench/sites
+
+  if [ ! -f "${sites_dir}/apps.txt" ]; then
+    echo "[aio] Bootstrapping sites/apps.txt..."
+    {
+      printf 'frappe
+'
+      printf 'erpnext
+'
+      if [ -d /home/frappe/frappe-bench/apps/ashan_cn_procurement ] || [ -e /opt/sites-skel/assets/ashan_cn_procurement ]; then
+        printf 'ashan_cn_procurement
+'
+      fi
+    } >"${sites_dir}/apps.txt"
+    chown frappe:frappe "${sites_dir}/apps.txt" || true
+  fi
+
+  if [ ! -f "${sites_dir}/apps.json" ]; then
+    echo "[aio] Bootstrapping sites/apps.json..."
+    cat >"${sites_dir}/apps.json" <<'EOF'
+[
+  {"url":"https://github.com/frappe/frappe","branch":"version-16"},
+  {"url":"https://github.com/frappe/erpnext","branch":"version-16"}
+]
+EOF
+    chown frappe:frappe "${sites_dir}/apps.json" || true
+  fi
+
+  if [ ! -f "${sites_dir}/common_site_config.json" ]; then
+    echo "[aio] Bootstrapping sites/common_site_config.json..."
+    echo '{}' >"${sites_dir}/common_site_config.json"
+    chown frappe:frappe "${sites_dir}/common_site_config.json" || true
+  fi
+}
+
 refresh_bundled_assets_if_needed() {
   local dst=/home/frappe/frappe-bench/sites
   local src=/opt/sites-skel
-  local src_id="$src/$ASSET_BUILD_ID_FILE"
-  local dst_id="$dst/$ASSET_BUILD_ID_FILE"
+  local asset_build_id_file=.asset-build-id
+  local src_id="$src/$asset_build_id_file"
+  local dst_id="$dst/$asset_build_id_file"
 
   if [ ! -f "$src_id" ]; then
     echo "[aio] No bundled asset build id found in image; skipping asset refresh"
@@ -88,7 +223,7 @@ refresh_bundled_assets_if_needed() {
       cp -a "$src/assets" "$dst/assets"
     fi
 
-    for file in apps.txt apps.json common_site_config.json "$ASSET_BUILD_ID_FILE"; do
+    for file in apps.txt apps.json common_site_config.json "$asset_build_id_file"; do
       if [ -e "$src/$file" ]; then
         cp -a "$src/$file" "$dst/$file"
       fi
@@ -102,8 +237,7 @@ refresh_bundled_assets_if_needed() {
 
 clear_site_cache_after_asset_refresh() {
   local site_name="$1"
-
-  if [ "$ASSET_BUNDLE_REFRESHED" != "1" ]; then
+  if [ "${ASSET_BUNDLE_REFRESHED:-0}" != "1" ]; then
     return 0
   fi
 
@@ -112,102 +246,9 @@ clear_site_cache_after_asset_refresh() {
   su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' clear-website-cache" || true
 }
 
-bootstrap_sites_volume
-refresh_bundled_assets_if_needed
-
-# Initialize MariaDB datadir if empty
-if [ ! -d /var/lib/mysql/mysql ]; then
-  echo "[aio] Initializing MariaDB data directory..."
-  if mariadb-install-db --help 2>/dev/null | grep -q -- '--auth-root-authentication-method'; then
-    mariadb-install-db \
-      --user=mysql \
-      --datadir=/var/lib/mysql \
-      --auth-root-authentication-method=normal >/dev/null
-  else
-    mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
-  fi
-fi
-
-# Generate nginx config for Frappe (listen 8080; route to local backend/socketio)
-# We intentionally DO NOT call upstream nginx-entrypoint.sh because it would start nginx and block.
-if [ -f /templates/nginx/frappe.conf.template ]; then
-  echo "[aio] Generating nginx config..."
-  : "${UPSTREAM_REAL_IP_ADDRESS:=127.0.0.1}"
-  : "${UPSTREAM_REAL_IP_HEADER:=X-Forwarded-For}"
-  : "${UPSTREAM_REAL_IP_RECURSIVE:=off}"
-  : "${PROXY_READ_TIMEOUT:=120}"
-  : "${CLIENT_MAX_BODY_SIZE:=50m}"
-
-  export UPSTREAM_REAL_IP_ADDRESS UPSTREAM_REAL_IP_HEADER UPSTREAM_REAL_IP_RECURSIVE PROXY_READ_TIMEOUT CLIENT_MAX_BODY_SIZE
-
-  mkdir -p /etc/nginx/conf.d
-  envsubst '${BACKEND}
-  ${SOCKETIO}
-  ${UPSTREAM_REAL_IP_ADDRESS}
-  ${UPSTREAM_REAL_IP_HEADER}
-  ${UPSTREAM_REAL_IP_RECURSIVE}
-  ${FRAPPE_SITE_NAME_HEADER}
-  ${PROXY_READ_TIMEOUT}
-  ${CLIENT_MAX_BODY_SIZE}' \
-    </templates/nginx/frappe.conf.template >/etc/nginx/conf.d/frappe.conf
-
-  rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-fi
-
-# Start supervisor (only mariadb+redis autostart)
-/usr/bin/supervisord -c /etc/supervisor/supervisord.conf &
-SUP_PID=$!
-
-SITES_DIR=/home/frappe/frappe-bench/sites
-
-# Ensure frappe can write to the mounted sites volume (Unraid often creates root-owned dirs)
-if ! su - frappe -c "test -w '${SITES_DIR}'" >/dev/null 2>&1; then
-  echo "[aio] Fixing permissions for sites volume..."
-  chown -R frappe:frappe "${SITES_DIR}" || true
-  chmod 775 "${SITES_DIR}" || true
-fi
-
-# When users mount an empty volume to /home/frappe/frappe-bench/sites,
-# the image-provided metadata files (apps.txt/apps.json/common_site_config.json)
-# are hidden and bench will crash. Bootstrap minimal required files.
-if [ ! -f "${SITES_DIR}/apps.txt" ]; then
-  echo "[aio] Bootstrapping sites/apps.txt..."
-  {
-    printf 'frappe\n'
-    printf 'erpnext\n'
-    if [ -d /home/frappe/frappe-bench/apps/ashan_cn_procurement ] || [ -e /opt/sites-skel/assets/ashan_cn_procurement ]; then
-      printf 'ashan_cn_procurement\n'
-    fi
-  } >"${SITES_DIR}/apps.txt"
-  chown frappe:frappe "${SITES_DIR}/apps.txt" || true
-fi
-
-if [ ! -f "${SITES_DIR}/apps.json" ]; then
-  echo "[aio] Bootstrapping sites/apps.json..."
-  cat >"${SITES_DIR}/apps.json" <<'EOF'
-[
-  {"url":"https://github.com/frappe/frappe","branch":"version-16"},
-  {"url":"https://github.com/frappe/erpnext","branch":"version-16"}
-]
-EOF
-  chown frappe:frappe "${SITES_DIR}/apps.json" || true
-fi
-
-if [ ! -f "${SITES_DIR}/common_site_config.json" ]; then
-  echo "[aio] Bootstrapping sites/common_site_config.json..."
-  echo '{}' >"${SITES_DIR}/common_site_config.json"
-  chown frappe:frappe "${SITES_DIR}/common_site_config.json" || true
-fi
-
-cleanup() {
-  echo "[aio] Caught signal, stopping supervisord..."
-  kill -TERM "$SUP_PID" 2>/dev/null || true
-}
-trap cleanup SIGTERM SIGINT
-
 wait_for_mariadb_ready() {
   local label="${1:-MariaDB}"
-  local timeout_seconds="${2:-$MARIADB_READY_TIMEOUT_SECONDS}"
+  local timeout_seconds="${2:-900}"
   local sleep_seconds=2
   local attempts=$(( timeout_seconds / sleep_seconds ))
   if [ "$attempts" -lt 1 ]; then attempts=1; fi
@@ -217,154 +258,62 @@ wait_for_mariadb_ready() {
     if mariadb-admin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; then
       return 0
     fi
-
-    if [ $(( i % 15 )) -eq 0 ]; then
-      echo "[aio] Still waiting for ${label} (${i} tries, ~${i}s*${sleep_seconds}/${timeout_seconds}s)..."
-      tail -n 20 /var/log/supervisor/mariadb.err 2>/dev/null || true
-      tail -n 20 /var/log/supervisor/mariadb.log 2>/dev/null || true
-      tail -n 20 /var/lib/mysql/*.err 2>/dev/null || true
-    fi
-
     sleep "$sleep_seconds"
   done
 
   echo "[aio] ${label} did not become ready within ${timeout_seconds}s" >&2
-  tail -n 50 /var/log/supervisor/mariadb.err 2>/dev/null || true
-  tail -n 50 /var/log/supervisor/mariadb.log 2>/dev/null || true
-  tail -n 50 /var/lib/mysql/*.err 2>/dev/null || true
   return 1
 }
 
-rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
-wait_for_mariadb_ready "MariaDB"
+wait_for_redis_ready() {
+  local timeout_seconds="${1:-120}"
+  local sleep_seconds=2
+  local attempts=$(( timeout_seconds / sleep_seconds ))
+  if [ "$attempts" -lt 1 ]; then attempts=1; fi
 
-# Ensure root password / remote root exists.
-# MariaDB may answer ping before socket auth is fully ready, so retry root auth too.
-echo "[aio] Ensuring MariaDB root password..."
-DB_AUTH=()
-SKIP_GRANTS=false
-
-for i in $(seq 1 15); do
-  if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -e 'SELECT 1' >/dev/null 2>&1; then
-    DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot)
-    break
-  fi
-  if mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}" -e 'SELECT 1' >/dev/null 2>&1; then
-    DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
-    break
-  fi
-  if [ -f /etc/mysql/debian.cnf ] && mariadb --defaults-extra-file=/etc/mysql/debian.cnf -e 'SELECT 1' >/dev/null 2>&1; then
-    DB_AUTH=(mariadb --defaults-extra-file=/etc/mysql/debian.cnf)
-    break
-  fi
-  sleep 2
-done
-
-if [ ${#DB_AUTH[@]} -eq 0 ]; then
-  echo "[aio] Standard auth methods failed; using skip-grant-tables to reset root auth..."
-  SKIP_GRANTS=true
-fi
-
-SQL_ESCAPED_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD//\'/\'\'}
-
-if [ "$SKIP_GRANTS" = true ]; then
-  echo "[aio] Stopping supervisor-managed MariaDB before skip-grants..."
-  supervisorctl stop mariadb || true
-  pkill mariadbd || true
-  sleep 3
-  rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
-
-  echo "[aio] Restarting MariaDB in skip-grant-tables mode..."
-  /usr/sbin/mariadbd \
-    --datadir=/var/lib/mysql \
-    --user=mysql \
-    --socket=/run/mysqld/mysqld.sock \
-    --skip-grant-tables \
-    --skip-networking \
-    --pid-file=/run/mysqld/skip-grants.pid \
-    >/var/log/supervisor/skip-grants.log 2>&1 &
-
-  SKIP_PID=$!
-  for i in $(seq 1 120); do
-    if mariadb --socket=/run/mysqld/mysqld.sock -e "SELECT 1" >/dev/null 2>&1; then
-      break
+  echo "[aio] Waiting for Redis to be ready (timeout=${timeout_seconds}s)..."
+  for i in $(seq 1 "$attempts"); do
+    if redis-cli -h 127.0.0.1 -p 6379 ping >/dev/null 2>&1; then
+      return 0
     fi
-    sleep 1
-    if [ "$i" = "120" ]; then
-      echo "[aio] ERROR: MariaDB skip-grant-tables start failed" >&2
-      cat /var/log/supervisor/skip-grants.log >&2 || true
-      kill "$SKIP_PID" 2>/dev/null || true
-      exit 1
-    fi
+    sleep "$sleep_seconds"
   done
 
-  mariadb --socket=/run/mysqld/mysqld.sock <<SQL
-UPDATE mysql.global_priv
-SET Priv = JSON_SET(
-  COALESCE(Priv, '{}'),
-  '$.plugin', 'mysql_native_password',
-  '$.authentication_string', PASSWORD('${SQL_ESCAPED_ROOT_PASSWORD}')
-)
-WHERE User='root' AND Host='localhost';
-SQL
-
-  echo "[aio] Root auth reset done. Restarting MariaDB normally..."
-  kill -TERM "$SKIP_PID" 2>/dev/null || true
-  sleep 3
-  rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
-
-  supervisorctl start mariadb || true
-  wait_for_mariadb_ready "MariaDB after skip-grants" 300
-
-  DB_AUTH=(mariadb --protocol=socket --socket=/run/mysqld/mysqld.sock -uroot -p"${MARIADB_ROOT_PASSWORD}")
-else
-  # Standard path: apply password via authenticated connection
-  "${DB_AUTH[@]}" <<SQL
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
-CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${SQL_ESCAPED_ROOT_PASSWORD}';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
-SQL
-fi
-
-echo "[aio] MariaDB root credentials ready."
-
-# Configure common_site_config to use local services
-su - frappe -c "cd /home/frappe/frappe-bench && \
-  bench set-config -g db_host 127.0.0.1 && \
-  bench set-config -gp db_port 3306 && \
-  bench set-config -g redis_cache 'redis://127.0.0.1:6379/${REDIS_CACHE_DB}' && \
-  bench set-config -g redis_queue 'redis://127.0.0.1:6379/${REDIS_QUEUE_DB}' && \
-  bench set-config -g redis_socketio 'redis://127.0.0.1:6379/${REDIS_SOCKETIO_DB}' && \
-  bench set-config -gp socketio_port 9000" || true
+  echo "[aio] Redis did not become ready within ${timeout_seconds}s" >&2
+  return 1
+}
 
 ensure_site_apps() {
   local site_name="$1"
   local raw_apps="${SITE_INSTALL_APPS}"
   local installed_apps
 
-  installed_apps=$(su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' list-apps" | tr -d '\r' || true)
+  installed_apps=$(su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' list-apps" | tr -d '
+' || true)
 
   IFS=',' read -r -a requested_apps <<< "$raw_apps"
   for app in "${requested_apps[@]}"; do
     app="${app// /}"
     [ -z "$app" ] && continue
 
-    if printf '%s\n' "$installed_apps" | grep -qx "$app"; then
+    if printf '%s
+' "$installed_apps" | grep -qx "$app"; then
       echo "[aio] Site ${site_name} already has app: ${app}"
       continue
     fi
 
     echo "[aio] Installing missing app on ${site_name}: ${app}"
     su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' install-app '${app}'"
-    installed_apps=$(printf '%s\n%s\n' "$installed_apps" "$app")
+    installed_apps=$(printf '%s
+%s
+' "$installed_apps" "$app")
   done
 }
 
 run_site_migrate() {
   local site_name="$1"
 
-  if [ "$SITE_AUTO_MIGRATE" != "1" ]; then
+  if [ "${SITE_AUTO_MIGRATE}" != "1" ]; then
     echo "[aio] SITE_AUTO_MIGRATE=${SITE_AUTO_MIGRATE}; skipping bench migrate"
     return
   fi
@@ -373,26 +322,135 @@ run_site_migrate() {
   su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' migrate"
 }
 
-# Create site if missing
-if [ ! -d "/home/frappe/frappe-bench/sites/${SITE_NAME}" ]; then
-  echo "[aio] Creating site: ${SITE_NAME}"
-  su - frappe -c "cd /home/frappe/frappe-bench && \
-    bench new-site --mariadb-user-host-login-scope='${MARIADB_USER_HOST_LOGIN_SCOPE}' \
-      --db-root-password '${MARIADB_ROOT_PASSWORD}' \
-      --admin-password '${ADMIN_PASSWORD}' \
-      --install-app erpnext \
-      '${SITE_NAME}'"
-else
-  echo "[aio] Site exists: ${SITE_NAME}"
-fi
+start_supervisor() {
+  /usr/bin/supervisord -c /etc/supervisor/supervisord.conf &
+  SUP_PID=$!
+}
 
-ensure_site_apps "${SITE_NAME}"
-run_site_migrate "${SITE_NAME}"
-clear_site_cache_after_asset_refresh "${SITE_NAME}"
+cleanup() {
+  echo "[aio] Caught signal, stopping supervisord..."
+  kill -TERM "$SUP_PID" 2>/dev/null || true
+}
 
-# Start ERPNext processes
-supervisorctl start backend websocket worker scheduler nginx
+main() {
+  : "${SITE_NAME:=site1.local}"
+  : "${ADMIN_PASSWORD:=adminpassword}"
+  : "${MARIADB_ROOT_PASSWORD:=mysqlpassword}"
+  : "${MARIADB_USER_HOST_LOGIN_SCOPE:=localhost}"
+  : "${SITE_INSTALL_APPS:=$(get_default_site_install_apps)}"
+  : "${SITE_AUTO_MIGRATE:=1}"
+  : "${AIO_MODE:=internal}"
+  : "${MARIADB_READY_TIMEOUT_SECONDS:=900}"
+  : "${REDIS_CACHE_DB:=0}"
+  : "${REDIS_QUEUE_DB:=1}"
+  : "${REDIS_SOCKETIO_DB:=2}"
+  : "${FRAPPE_DB_TYPE:=mariadb}"
+  : "${FRAPPE_DB_HOST:=}"
+  : "${FRAPPE_DB_PORT:=}"
+  : "${FRAPPE_DB_NAME:=}"
+  : "${FRAPPE_DB_USER:=}"
+  : "${FRAPPE_DB_PASSWORD:=}"
+  : "${FRAPPE_REDIS_CACHE:=}"
+  : "${FRAPPE_REDIS_QUEUE:=}"
+  : "${FRAPPE_REDIS_SOCKETIO:=}"
+  : "${FRAPPE_DB_SOCKET:=}"
+  : "${FRAPPE_DB_ROOT_PASSWORD:=}"
+  : "${FRAPPE_SITE_NAME_HEADER:=$SITE_NAME}"
+  : "${BACKEND:=127.0.0.1:8000}"
+  : "${SOCKETIO:=127.0.0.1:9000}"
 
-echo "[aio] Ready. ERPNext should be reachable on :8080"
+  AIO_MODE="$(normalize_mode)"
+  SITE_INSTALL_APPS="$(site_install_apps_resolve)"
+  export SITE_NAME ADMIN_PASSWORD MARIADB_ROOT_PASSWORD MARIADB_USER_HOST_LOGIN_SCOPE
+  export SITE_INSTALL_APPS SITE_AUTO_MIGRATE AIO_MODE MARIADB_READY_TIMEOUT_SECONDS
+  export REDIS_CACHE_DB REDIS_QUEUE_DB REDIS_SOCKETIO_DB
+  export FRAPPE_DB_TYPE FRAPPE_DB_HOST FRAPPE_DB_PORT FRAPPE_DB_NAME FRAPPE_DB_USER FRAPPE_DB_PASSWORD
+  export FRAPPE_REDIS_CACHE FRAPPE_REDIS_QUEUE FRAPPE_REDIS_SOCKETIO FRAPPE_DB_SOCKET FRAPPE_DB_ROOT_PASSWORD
+  export FRAPPE_SITE_NAME_HEADER BACKEND SOCKETIO
 
-wait $SUP_PID
+  mkdir -p /run/mysqld /var/lib/redis /var/log/supervisor
+  chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
+  chown -R redis:redis /var/lib/redis || true
+
+  bootstrap_sites_volume
+  refresh_bundled_assets_if_needed
+  ensure_sites_dir_permissions
+  write_default_sites_metadata
+
+  setup_nginx_config
+  start_supervisor
+
+  trap cleanup SIGTERM SIGINT
+
+  if [ "$AIO_MODE" = "external" ]; then
+    echo "[aio] Running in EXTERNAL mode: bundled MariaDB/Redis will stay disabled"
+    require_non_empty "${FRAPPE_DB_HOST:-}" "FRAPPE_DB_HOST"
+    require_non_empty "${FRAPPE_REDIS_CACHE:-}" "FRAPPE_REDIS_CACHE"
+    require_non_empty "${FRAPPE_REDIS_QUEUE:-}" "FRAPPE_REDIS_QUEUE"
+    require_non_empty "${FRAPPE_REDIS_SOCKETIO:-}" "FRAPPE_REDIS_SOCKETIO"
+    echo "[aio] External mode expects the target database and user to already exist; bench will not create them."
+    if [ -z "${FRAPPE_DB_PORT:-}" ]; then
+      case "${FRAPPE_DB_TYPE:-mariadb}" in
+        mariadb) FRAPPE_DB_PORT=3306 ;;
+        postgres) FRAPPE_DB_PORT=5432 ;;
+        *) echo "[aio] Unsupported FRAPPE_DB_TYPE=${FRAPPE_DB_TYPE:-}" >&2; exit 1 ;;
+      esac
+      export FRAPPE_DB_PORT
+    fi
+    if [ -z "${FRAPPE_DB_NAME:-}" ]; then
+      FRAPPE_DB_NAME="${SITE_NAME}"
+      export FRAPPE_DB_NAME
+    fi
+    if [ -z "${FRAPPE_DB_USER:-}" ]; then
+      FRAPPE_DB_USER="${FRAPPE_DB_NAME}"
+      export FRAPPE_DB_USER
+    fi
+    require_non_empty "${FRAPPE_DB_NAME:-}" "FRAPPE_DB_NAME or SITE_NAME"
+    require_non_empty "${FRAPPE_DB_USER:-}" "FRAPPE_DB_USER"
+    write_common_site_config external
+  else
+    if [ ! -d /var/lib/mysql/mysql ]; then
+      echo "[aio] Initializing MariaDB data directory..."
+      if mariadb-install-db --help 2>/dev/null | grep -q -- '--auth-root-authentication-method'; then
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql --auth-root-authentication-method=normal >/dev/null
+      else
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
+      fi
+    fi
+    write_common_site_config internal
+  fi
+
+  if [ "$AIO_MODE" = "internal" ]; then
+    rm -f /run/mysqld/mysqld.sock /run/mysqld/mysqld.pid /run/mysqld/skip-grants.pid 2>/dev/null || true
+    supervisorctl start mariadb redis || true
+    wait_for_mariadb_ready "MariaDB" "$MARIADB_READY_TIMEOUT_SECONDS"
+    wait_for_redis_ready 120 || true
+  else
+    supervisorctl stop mariadb redis >/dev/null 2>&1 || true
+  fi
+
+  if [ ! -d "/home/frappe/frappe-bench/sites/${SITE_NAME}" ]; then
+    echo "[aio] Creating site: ${SITE_NAME}"
+    if [ "$AIO_MODE" = "internal" ]; then
+      su - frappe -c "cd /home/frappe/frappe-bench && bench new-site --mariadb-user-host-login-scope='${MARIADB_USER_HOST_LOGIN_SCOPE}' --db-root-password '${MARIADB_ROOT_PASSWORD}' --admin-password '${ADMIN_PASSWORD}' --install-app erpnext '${SITE_NAME}'"
+    else
+      require_non_empty "${FRAPPE_DB_USER:-}" "FRAPPE_DB_USER"
+      require_non_empty "${FRAPPE_DB_PASSWORD:-}" "FRAPPE_DB_PASSWORD"
+      su - frappe -c "cd /home/frappe/frappe-bench && bench new-site '${SITE_NAME}' --db-type '${FRAPPE_DB_TYPE}' --db-name '${FRAPPE_DB_NAME}' --db-host '${FRAPPE_DB_HOST}' --db-port '${FRAPPE_DB_PORT}' --db-user '${FRAPPE_DB_USER}' --db-password '${FRAPPE_DB_PASSWORD}' --no-setup-db --admin-password '${ADMIN_PASSWORD}' --install-app erpnext"
+    fi
+  else
+    echo "[aio] Site exists: ${SITE_NAME}"
+  fi
+
+  ensure_site_apps "${SITE_NAME}"
+  run_site_migrate "${SITE_NAME}"
+  clear_site_cache_after_asset_refresh "${SITE_NAME}"
+
+  supervisorctl start backend websocket worker scheduler nginx
+
+  echo "[aio] Ready. ERPNext is reachable on :8080 in ${AIO_MODE} mode"
+
+  wait "$SUP_PID"
+}
+
+main "$@"

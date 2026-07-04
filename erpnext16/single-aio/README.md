@@ -7,6 +7,33 @@
 - `ghcr.io/ashanzzz/erpnext16:latest`
 - `ghcr.io/ashanzzz/erpnext16:v16.x.y-aio`
 
+## 这套镜像支持两种运行模式
+
+| 模式 | 说明 |
+|---|---|
+| `internal` | 容器内启动 MariaDB + Redis + ERPNext，适合单机开箱即用 |
+| `external` | 连接外部数据库 / 外部 Redis，不再启动容器内的 DB/Redis 服务 |
+
+默认模式是 `internal`。如果你改成外部服务，目标是**同一套镜像**，只切环境变量，不拆两套镜像。
+
+### `external` 模式需要的变量
+
+最少需要设置：
+- `AIO_MODE=external`
+- `FRAPPE_DB_TYPE=mariadb` 或 `postgres`
+- `FRAPPE_DB_NAME`
+- `FRAPPE_DB_USER`
+- `FRAPPE_DB_PASSWORD`
+- `FRAPPE_DB_HOST`
+- `FRAPPE_DB_PORT`
+- `FRAPPE_REDIS_CACHE`
+- `FRAPPE_REDIS_QUEUE`
+- `FRAPPE_REDIS_SOCKETIO`
+
+如果你已经有一套外部数据库账号习惯，也可以让 `FRAPPE_DB_USER` 与 `FRAPPE_DB_NAME` 相同，脚本会按 Frappe 默认逻辑处理。
+
+> 注意：`external` 模式只负责连接现成的数据库和 Redis；数据库/用户创建、初始化、权限授予都要提前完成。
+
 ## 默认登录信息
 
 - **站点地址**：`http://<容器IP>:6888/login`
