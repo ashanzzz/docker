@@ -1,11 +1,11 @@
 # ERPNext16 single-container AIO
-# - Built from official Frappe/ERPNext code (via frappe/build + bench init)
-# - Runs MariaDB + Redis + ERPNext services inside ONE container (supervisord)
+# - Built from official Frappe/ERPNext code via frappe/build + bench init.
+# - Ashan custom app is vendored into the image at build time.
+# - The custom app currently uses direct public JS/CSS assets rather than
+#   esbuild *.bundle.* outputs, so its public directory is linked into
+#   sites/assets without launching a second full Yarn production build.
+# - Runs MariaDB + Redis + ERPNext services inside ONE container (supervisord).
 # - Intended for Unraid "docker run" users who do not want compose.
-#
-# Tradeoffs:
-# - Heavier image and more moving parts in one container
-# - Upgrades require more care (backup volumes first)
 
 ARG FRAPPE_IMAGE_TAG=version-16
 ARG FRAPPE_BRANCH=version-16
@@ -18,33 +18,45 @@ ARG APPS_JSON_BASE64
 
 USER root
 RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
-    mkdir -p /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
-  fi
+      mkdir -p /opt/frappe && \
+      echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
+    fi
+
 COPY custom-apps /opt/custom-apps
 RUN chown -R frappe:frappe /opt/custom-apps
 
 USER frappe
 RUN export APP_INSTALL_ARGS="" && \
-  if [ -n "${APPS_JSON_BASE64}" ]; then \
-    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
-  fi && \
-  bench init ${APP_INSTALL_ARGS} \
-    --frappe-branch=${FRAPPE_BRANCH} \
-    --frappe-path=${FRAPPE_PATH} \
-    --no-procfile \
-    --no-backups \
-    --skip-redis-config-generation \
-    --verbose \
-    /home/frappe/frappe-bench && \
-  cd /home/frappe/frappe-bench && \
-  if [ -d /opt/custom-apps/ashan_cn_procurement ]; then \
-    cp -a /opt/custom-apps/ashan_cn_procurement /home/frappe/frappe-bench/apps/ashan_cn_procurement && \
-    /home/frappe/frappe-bench/env/bin/python -m pip install --no-deps -e apps/ashan_cn_procurement && \
-    printf '\nashan_cn_procurement\n' >> sites/apps.txt && \
-    bench build --app ashan_cn_procurement; \
-  fi && \
-  echo "{}" > sites/common_site_config.json && \
-  find apps -mindepth 1 -path "*/.git" | xargs rm -fr
+    if [ -n "${APPS_JSON_BASE64}" ]; then \
+      export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
+    fi && \
+    bench init ${APP_INSTALL_ARGS} \
+      --frappe-branch="${FRAPPE_BRANCH}" \
+      --frappe-path="${FRAPPE_PATH}" \
+      --no-procfile \
+      --no-backups \
+      --skip-redis-config-generation \
+      --verbose \
+      /home/frappe/frappe-bench && \
+    cd /home/frappe/frappe-bench && \
+    if [ -d /opt/custom-apps/ashan_cn_procurement ]; then \
+      cp -a /opt/custom-apps/ashan_cn_procurement apps/ashan_cn_procurement && \
+      env/bin/python -m pip install --no-deps -e apps/ashan_cn_procurement && \
+      env/bin/python -c "import ashan_cn_procurement; print('ashan_cn_procurement import OK')" && \
+      if ! grep -qxF "ashan_cn_procurement" sites/apps.txt; then \
+        printf '%s\n' "ashan_cn_procurement" >> sites/apps.txt; \
+      fi && \
+      APP_PUBLIC="/home/frappe/frappe-bench/apps/ashan_cn_procurement/ashan_cn_procurement/public"; \
+      ASSET_LINK="/home/frappe/frappe-bench/sites/assets/ashan_cn_procurement"; \
+      if [ -d "${APP_PUBLIC}" ]; then \
+        mkdir -p sites/assets && \
+        if [ -e "${ASSET_LINK}" ] || [ -L "${ASSET_LINK}" ]; then rm -rf "${ASSET_LINK}"; fi && \
+        ln -s "${APP_PUBLIC}" "${ASSET_LINK}" && \
+        test -L "${ASSET_LINK}"; \
+      fi; \
+    fi && \
+    echo "{}" > sites/common_site_config.json && \
+    find apps -mindepth 2 -type d -name .git -prune -exec rm -rf {} +
 
 FROM frappe/base:${FRAPPE_IMAGE_TAG} AS aio
 
@@ -54,7 +66,7 @@ ARG FRAPPE_PATH=https://github.com/frappe/frappe
 
 USER root
 
-# Install services for AIO
+# Install services for AIO.
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     mariadb-server mariadb-client \
     redis-server redis-tools \
@@ -64,23 +76,30 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy bench from builder stage
+# Copy bench from builder stage.
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
-# Build-time asset manifest used to detect version mismatch at runtime.
+# Build-time asset manifest used to detect image/site asset mismatches at runtime.
 RUN /bin/sh -ec "set -eu; cd /home/frappe/frappe-bench; { printf '%s\n' \"FRAPPE_IMAGE_TAG=${FRAPPE_IMAGE_TAG}\" \"FRAPPE_BRANCH=${FRAPPE_BRANCH}\" \"FRAPPE_PATH=${FRAPPE_PATH}\"; sha256sum sites/apps.json 2>/dev/null || true; find sites -maxdepth 1 \( -name 'apps.txt' -o -name 'apps.json' -o -name 'common_site_config.json' \) -type f -exec sha256sum {} + 2>/dev/null || true; find sites/assets -type f -exec sha256sum {} + 2>/dev/null || true; if [ -d apps/ashan_cn_procurement ]; then find apps/ashan_cn_procurement -type f -exec sha256sum {} + 2>/dev/null || true; fi; } | sha256sum | awk '{print \$1}' > sites/.asset-build-id"
 
-# If users mount an empty sites volume, it would hide the image's default sites files
-# (apps.txt, assets/, etc). Keep a copy outside the volume so entrypoint can bootstrap.
+# If users mount an empty sites volume, it would hide the image's default
+# apps.txt/assets metadata. Keep a skeleton outside that volume for bootstrap.
 RUN mkdir -p /opt/sites-skel && \
     cp -a /home/frappe/frappe-bench/sites/. /opt/sites-skel/ && \
     chown -R frappe:frappe /opt/sites-skel
 
-# AIO rootfs (supervisor configs + entrypoint)
+# AIO rootfs (supervisor configs + entrypoint).
 COPY single-aio/rootfs/ /
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/aio-reset.sh /usr/local/bin/run-backend.sh /usr/local/bin/run-worker.sh /usr/local/bin/aio-healthcheck.sh /usr/local/bin/run-mariadb.sh /usr/local/bin/run-redis.sh
+RUN chmod +x \
+    /usr/local/bin/entrypoint.sh \
+    /usr/local/bin/aio-reset.sh \
+    /usr/local/bin/run-backend.sh \
+    /usr/local/bin/run-worker.sh \
+    /usr/local/bin/aio-healthcheck.sh \
+    /usr/local/bin/run-mariadb.sh \
+    /usr/local/bin/run-redis.sh
 
-# Persistent data
+# Persistent data.
 VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]
 
 EXPOSE 8080
