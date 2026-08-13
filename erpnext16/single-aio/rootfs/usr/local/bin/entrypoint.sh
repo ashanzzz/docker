@@ -288,8 +288,7 @@ ensure_site_apps() {
   local raw_apps="${SITE_INSTALL_APPS}"
   local installed_apps
 
-  installed_apps=$(su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' list-apps" | tr -d '
-' || true)
+  installed_apps=$(su - frappe -c "cd /home/frappe/frappe-bench && bench --site '${site_name}' list-apps" || true)
 
   IFS=',' read -r -a requested_apps <<< "$raw_apps"
   for app in "${requested_apps[@]}"; do

@@ -49,6 +49,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      - name: Fetch Ashan ERPNext custom app
+        shell: bash
+        env:
+          ASHAN_REPO_TOKEN: ${{ secrets.ASHAN_REPO_TOKEN }}
+          ASHAN_REPO_REF: master
+        run: |
+          set -euo pipefail
+          chmod +x erpnext16/scripts/fetch-ashan-custom-app.sh
+          bash erpnext16/scripts/fetch-ashan-custom-app.sh
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
