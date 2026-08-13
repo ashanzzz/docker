@@ -1,31 +1,28 @@
-name: Build ERPNext16 AIO image (single container)
+name: Build ERPNext16 External AIO
 
 on:
   push:
     branches:
       - main
     paths:
-      - '.github/workflows/erpnext16-single-container-aio.yml'
-      - 'erpnext16/**'
+      - ".github/workflows/erpnext16-single-container-aio.yml"
+      - "erpnext16/**"
   workflow_dispatch:
     inputs:
       version:
-        description: "Version tag like v16.13.1 (optional; empty = compare local tracked version with official latest v16.x.y)"
+        description: "ERPNext v16 tag, e.g. v16.32.0. Empty = latest official v16.x.y."
         required: false
-      apps_json_path:
-        description: "Path to apps.json used as AIO build input"
-        required: false
-        default: "erpnext16/image/apps.json"
       force_rebuild:
-        description: "Rebuild without cache (true/false)"
+        description: "Disable Docker cache for this build"
+        type: boolean
         required: false
-        default: "false"
+        default: false
       upload_image_artifact:
-        description: "Also export a compressed image artifact for manual docker load (true/false)"
+        description: "Export a docker image tar.gz artifact"
+        type: boolean
         required: false
-        default: "false"
+        default: false
   schedule:
-    # GitHub Actions cron uses UTC. This runs monthly on day 1 at 02:41 UTC.
     - cron: "41 2 1 * *"
 
 permissions:
@@ -33,33 +30,106 @@ permissions:
   packages: write
 
 concurrency:
-  group: erpnext16-aio-${{ github.ref }}
+  group: erpnext16-external-aio-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
+    # Avoid a second build caused by this workflow committing ERPNEXT_VERSION.
+    if: ${{ github.event_name != 'push' || github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout docker repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install jq
+      - name: Install build helpers
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Fetch Ashan ERPNext custom app
+      - name: Resolve ERPNext v16 version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUESTED="${{ github.event.inputs.version }}"
+          if [[ -n "$REQUESTED" ]]; then
+            VERSION="$REQUESTED"
+          else
+            pattern='^v?16\.[0-9]+\.[0-9]+$'
+            url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
+            tmp="$(mktemp)"
+            : > "$tmp"
+
+            for _ in $(seq 1 20); do
+              payload="$(curl -fsSL "$url")"
+              echo "$payload" | jq -r '.results[].name' | grep -E "$pattern" >> "$tmp" || true
+              url="$(echo "$payload" | jq -r '.next // empty')"
+              [[ -z "$url" || "$url" == "null" ]] && break
+            done
+
+            VERSION="$(sort -V "$tmp" | tail -n1 || true)"
+            rm -f "$tmp"
+
+            [[ -n "$VERSION" ]] || {
+              echo "::error::Could not resolve an official ERPNext v16 tag."
+              exit 1
+            }
+          fi
+
+          [[ "$VERSION" == v* ]] || VERSION="v$VERSION"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ERPNext: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update tracked ERPNext version
+        id: tracked
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="erpnext16/ERPNEXT_VERSION"
+          VERSION="${{ steps.version.outputs.version }}"
+          CURRENT="$(tr -d '\r\n' < "$FILE" 2>/dev/null || true)"
+
+          if [[ "$CURRENT" != "$VERSION" ]]; then
+            printf '%s\n' "$VERSION" > "$FILE"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit tracked version update
+        if: ${{ steps.tracked.outputs.changed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add erpnext16/ERPNEXT_VERSION
+          git commit -m "chore(erpnext16): track ${{ steps.version.outputs.version }}"
+          git push
+
+      - name: Fetch Ashan app
         shell: bash
         env:
+          ASHAN_REPO_REF: main
           ASHAN_REPO_TOKEN: ${{ secrets.ASHAN_REPO_TOKEN }}
-          ASHAN_REPO_REF: master
         run: |
           set -euo pipefail
           chmod +x erpnext16/scripts/fetch-ashan-custom-app.sh
-          bash erpnext16/scripts/fetch-ashan-custom-app.sh
+          erpnext16/scripts/fetch-ashan-custom-app.sh
 
-      - name: Verify Ashan build context
+      - name: Verify Ashan source
+        id: ashan
         shell: bash
         run: |
           set -euo pipefail
@@ -67,175 +137,77 @@ jobs:
           APP="erpnext16/custom-apps/ashan_cn_procurement"
 
           test -f "$APP/pyproject.toml"
-          test -d "$APP/ashan_cn_procurement"
+          test -f "$APP/ashan_cn_procurement/hooks.py"
+          test -f "$APP/.ashan-source-commit"
 
-          echo "=== Ashan build staging ==="
-          ls -lah "$APP"
+          SHA="$(tr -d '\r\n' < "$APP/.ashan-source-commit")"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Invalid Ashan commit marker: $SHA"
+            exit 1
+          }
 
-          echo
-          echo "=== pyproject.toml ==="
-          head -n 30 "$APP/pyproject.toml"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "Ashan: $SHA" >> "$GITHUB_STEP_SUMMARY"
 
-          echo
-          echo "Ashan build context OK."
+      - name: Build ERPNext apps manifest
+        id: apps
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+          VERSION="${{ steps.version.outputs.version }}"
+          MANIFEST="erpnext16/apps.json"
 
-      - name: Login GHCR
+          test -f "$MANIFEST"
+
+          BASE64="$(
+            jq --arg ver "$VERSION" \
+              'map(if (.url | endswith("/erpnext")) then .branch=$ver else . end)' \
+              "$MANIFEST" |
+            (base64 -w 0 2>/dev/null || base64 | tr -d '\n')
+          )"
+
+          echo "base64=$BASE64" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve compatible Frappe ref
+        id: frappe
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if git ls-remote --exit-code --tags \
+              https://github.com/frappe/frappe \
+              "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            REF="$VERSION"
+          else
+            REF="version-16"
+            echo "::warning::Frappe tag ${VERSION} does not exist; using version-16."
+          fi
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Frappe: $REF" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve image trace tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "short_sha=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve official ERPNext v16.x.y
-        id: official
-        shell: bash
-        run: |
-          set -euo pipefail
-          INPUT_VER="${{ github.event.inputs.version }}"
-          if [[ -n "$INPUT_VER" ]]; then
-            VER_V="$INPUT_VER"
-          else
-            MAJOR=16
-            PATTERN="^v?${MAJOR}\.[0-9]+\.[0-9]+$"
-            url='https://hub.docker.com/v2/repositories/frappe/erpnext/tags?page_size=100'
-            tmp=$(mktemp)
-            : > "$tmp"
-            for _ in $(seq 1 20); do
-              json=$(curl -fsSL "$url")
-              echo "$json" | jq -r '.results[].name' | grep -E "$PATTERN" >> "$tmp" || true
-              url=$(echo "$json" | jq -r '.next // empty')
-              [[ -z "$url" || "$url" == "null" ]] && break
-            done
-            VER_V=$(sort -V "$tmp" | tail -n1 || true)
-            rm -f "$tmp"
-            [[ -n "$VER_V" ]] || { echo "::error::discover version failed"; exit 1; }
-          fi
-          [[ "$VER_V" == v* ]] || VER_V="v$VER_V"
-          echo "version=$VER_V" >> "$GITHUB_OUTPUT"
-
-      - name: Compare and update ERPNEXT_VERSION
-        id: syncver
-        shell: bash
-        run: |
-          set -euo pipefail
-          TARGET="erpnext16/ERPNEXT_VERSION"
-          OFFICIAL="${{ steps.official.outputs.version }}"
-          CURRENT=""
-          if [[ -f "$TARGET" ]]; then
-            CURRENT=$(tr -d '\r\n' < "$TARGET")
-          fi
-          if [[ "$CURRENT" != "$OFFICIAL" ]]; then
-            printf '%s\n' "$OFFICIAL" > "$TARGET"
-            echo "version_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "version_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "version=$OFFICIAL" >> "$GITHUB_OUTPUT"
-
-      - name: Commit ERPNEXT_VERSION bump
-        if: ${{ steps.syncver.outputs.version_changed == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add erpnext16/ERPNEXT_VERSION
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "chore(erpnext16): bump tracked version to ${{ steps.syncver.outputs.version }}"
-          git push
-
-      - name: Decide whether build is needed
-        id: decide
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.syncver.outputs.version }}"
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "Push touching erpnext16 source/workflow detected; forcing rebuild." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "${{ steps.syncver.outputs.version_changed }}" == "true" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_PATH="${OWNER_LC}/erpnext16"
-          GHCR_PULL_TOKEN=$(curl -sS "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" | jq -r '.token // empty' || true)
-          if [[ -z "$GHCR_PULL_TOKEN" ]]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          TAGS_JSON=$(curl -sS -H "Authorization: Bearer ${GHCR_PULL_TOKEN}" "https://ghcr.io/v2/${IMAGE_PATH}/tags/list" || true)
-          if [[ -n "$TAGS_JSON" ]] && echo "$TAGS_JSON" | jq -e --arg v "${VERSION}-aio" '.tags // [] | index($v) != null' >/dev/null; then
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build APPS_JSON_BASE64 (pin erpnext app for AIO build)
-        if: ${{ steps.decide.outputs.should_build == 'true' }}
-        id: apps
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER_V="${{ steps.syncver.outputs.version }}"
-          APPS_JSON_PATH="${{ github.event.inputs.apps_json_path }}"
-          if [[ -z "$APPS_JSON_PATH" ]]; then
-            APPS_JSON_PATH="erpnext16/image/apps.json"
-          fi
-          if [[ ! -f "$APPS_JSON_PATH" ]]; then
-            echo "::error::apps.json not found: $APPS_JSON_PATH"
-            exit 2
-          fi
-          APPS_JSON_BASE64=$(jq --arg ver "$VER_V" 'map(if (.url|endswith("/erpnext")) then .branch=$ver else . end)' "$APPS_JSON_PATH" | (base64 -w 0 2>/dev/null || base64 | tr -d '\n'))
-          echo "apps_json_base64=$APPS_JSON_BASE64" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve Frappe ref for AIO build
-        if: ${{ steps.decide.outputs.should_build == 'true' }}
-        id: frappe_ref
-        shell: bash
-        run: |
-          set -euo pipefail
-          ERPNEXT_REF="${{ steps.syncver.outputs.version }}"
-          FRAPPE_REF="$ERPNEXT_REF"
-          if git ls-remote --exit-code --tags https://github.com/frappe/frappe "refs/tags/${FRAPPE_REF}" >/dev/null 2>&1; then
-            echo "frappe_ref=$FRAPPE_REF" >> "$GITHUB_OUTPUT"
-            echo "frappe_ref_mode=exact_tag" >> "$GITHUB_OUTPUT"
-            echo "Using exact Frappe tag: ${FRAPPE_REF}" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          if git ls-remote --exit-code --heads https://github.com/frappe/frappe "refs/heads/version-16" >/dev/null 2>&1; then
-            echo "frappe_ref=version-16" >> "$GITHUB_OUTPUT"
-            echo "frappe_ref_mode=version_branch" >> "$GITHUB_OUTPUT"
-            echo "::warning::Exact Frappe tag ${FRAPPE_REF} not found. Falling back to version-16 branch."
-            echo "Frappe fallback: exact tag ${FRAPPE_REF} missing, using version-16 branch." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          echo "::error::Neither exact Frappe tag ${FRAPPE_REF} nor version-16 branch is available."
-          exit 1
-
-      - name: Resolve short SHA for image tagging
-        if: ${{ steps.decide.outputs.should_build == 'true' }}
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          SHORT_SHA=$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "Using trace tag: sha-${SHORT_SHA}-aio" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build & Push (GHCR)
-        if: ${{ steps.decide.outputs.should_build == 'true' }}
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: ./erpnext16
@@ -243,48 +215,74 @@ jobs:
           push: true
           platforms: linux/amd64
           pull: true
-          no-cache: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_rebuild == 'true' }}
+          no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild }}
+          cache-from: type=gha,scope=erpnext16-external-aio
+          cache-to: type=gha,mode=max,scope=erpnext16-external-aio
           build-args: |
             FRAPPE_IMAGE_TAG=version-16
-            FRAPPE_BRANCH=${{ steps.frappe_ref.outputs.frappe_ref }}
+            FRAPPE_BRANCH=${{ steps.frappe.outputs.ref }}
             FRAPPE_PATH=https://github.com/frappe/frappe
-            APPS_JSON_BASE64=${{ steps.apps.outputs.apps_json_base64 }}
+            APPS_JSON_BASE64=${{ steps.apps.outputs.base64 }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.syncver.outputs.version }}-aio
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}-external-aio
+            com.ashan.erpnext.architecture=external-db-redis-only
+            com.ashan.erpnext.custom-app.ref=main
+            com.ashan.erpnext.custom-app.revision=${{ steps.ashan.outputs.sha }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/erpnext16:aio
             ghcr.io/${{ github.repository_owner }}/erpnext16:latest
-            ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
+            ghcr.io/${{ github.repository_owner }}/erpnext16:aio
+            ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.version.outputs.version }}-aio
             ghcr.io/${{ github.repository_owner }}/erpnext16:sha-${{ steps.meta.outputs.short_sha }}-aio
 
-      - name: Smoke-check image metadata
-        if: ${{ steps.decide.outputs.should_build == 'true' }}
-        run: |
-          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio
-
-      - name: Export docker image artifact
-        if: ${{ steps.decide.outputs.should_build == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_image_artifact == 'true' }}
+      - name: Pull and validate published image
         shell: bash
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.syncver.outputs.version }}-aio"
-          OUT="/tmp/erpnext16-${{ steps.syncver.outputs.version }}-aio.docker.tar.gz"
+
+          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.version.outputs.version }}-aio"
+          docker pull "$IMAGE"
+
+          docker run --rm \
+            --entrypoint /bin/bash \
+            "$IMAGE" \
+            -lc '
+              set -euo pipefail
+
+              cd /home/frappe/frappe-bench
+
+              env/bin/python -c "import frappe; import erpnext; import ashan_cn_procurement"
+
+              python3 -c '"'"'from pathlib import Path; apps=Path("sites/apps.txt").read_text().splitlines(); expected=["frappe","erpnext","ashan_cn_procurement"]; assert apps == expected, (apps, expected)'"'"'
+
+              test -f /usr/local/bin/entrypoint.sh
+              test ! -e /etc/supervisor/conf.d/00-mariadb.conf
+              test ! -e /etc/supervisor/conf.d/00-redis.conf
+              test ! -e /usr/local/bin/run-mariadb.sh
+              test ! -e /usr/local/bin/run-redis.sh
+
+              echo "External-only AIO image validation passed."
+            '
+
+      - name: Export image artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_image_artifact }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="ghcr.io/${{ github.repository_owner }}/erpnext16:${{ steps.version.outputs.version }}-aio"
+          OUT="/tmp/erpnext16-${{ steps.version.outputs.version }}-aio.docker.tar.gz"
+
           docker pull "$IMAGE"
           docker save "$IMAGE" | gzip -1 > "$OUT"
           ls -lh "$OUT"
 
-      - name: Upload docker image artifact
-        if: ${{ steps.decide.outputs.should_build == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_image_artifact == 'true' }}
+      - name: Upload image artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_image_artifact }}
         uses: actions/upload-artifact@v4
         with:
-          name: erpnext16-${{ steps.syncver.outputs.version }}-aio-docker-image
-          path: /tmp/erpnext16-${{ steps.syncver.outputs.version }}-aio.docker.tar.gz
+          name: erpnext16-${{ steps.version.outputs.version }}-aio-docker-image
+          path: /tmp/erpnext16-${{ steps.version.outputs.version }}-aio.docker.tar.gz
           if-no-files-found: error
           compression-level: 0
-
-      - name: Nothing to build
-        if: ${{ steps.decide.outputs.should_build != 'true' }}
-        run: |
-          echo "No build needed. Local tracked ERPNext version already matches official version and AIO tag exists."

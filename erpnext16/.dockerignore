@@ -3,7 +3,7 @@
 **/*.py[cod]
 **/*.egg-info/
 
-# Ashan must be included in AIO build context.
+# Only the CI-vendored Ashan app is admitted to the image.
 custom-apps/*
 !custom-apps/ashan_cn_procurement/
 !custom-apps/ashan_cn_procurement/**

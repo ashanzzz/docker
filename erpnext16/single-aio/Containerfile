@@ -1,11 +1,17 @@
-# ERPNext16 single-container AIO
-# - Built from official Frappe/ERPNext code via frappe/build + bench init.
-# - Ashan custom app is vendored into the image at build time.
-# - The custom app currently uses direct public JS/CSS assets rather than
-#   esbuild *.bundle.* outputs, so its public directory is linked into
-#   sites/assets without launching a second full Yarn production build.
-# - Runs MariaDB + Redis + ERPNext services inside ONE container (supervisord).
-# - Intended for Unraid "docker run" users who do not want compose.
+# ERPNext16 single-container application stack.
+#
+# Runtime architecture:
+#   - nginx
+#   - gunicorn backend
+#   - socketio
+#   - worker
+#   - scheduler
+#
+# MariaDB and Redis are ALWAYS external.
+# This image intentionally contains no bundled MariaDB/Redis service.
+#
+# Ashan source remains in its independent Git repository. GitHub Actions
+# vendors a snapshot into custom-apps/ashan_cn_procurement before this build.
 
 ARG FRAPPE_IMAGE_TAG=version-16
 ARG FRAPPE_BRANCH=version-16
@@ -17,20 +23,18 @@ ARG FRAPPE_PATH=https://github.com/frappe/frappe
 ARG APPS_JSON_BASE64
 
 USER root
-RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
-      mkdir -p /opt/frappe && \
-      echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
-    fi
 
-COPY custom-apps /opt/custom-apps
-RUN chown -R frappe:frappe /opt/custom-apps
+RUN test -n "${APPS_JSON_BASE64}" && \
+    mkdir -p /opt/frappe && \
+    printf '%s' "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json
+
+COPY custom-apps/ashan_cn_procurement /opt/ashan_cn_procurement
+RUN chown -R frappe:frappe /opt/ashan_cn_procurement
 
 USER frappe
-RUN export APP_INSTALL_ARGS="" && \
-    if [ -n "${APPS_JSON_BASE64}" ]; then \
-      export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
-    fi && \
-    bench init ${APP_INSTALL_ARGS} \
+
+RUN bench init \
+      --apps_path=/opt/frappe/apps.json \
       --frappe-branch="${FRAPPE_BRANCH}" \
       --frappe-path="${FRAPPE_PATH}" \
       --no-procfile \
@@ -39,26 +43,21 @@ RUN export APP_INSTALL_ARGS="" && \
       --verbose \
       /home/frappe/frappe-bench && \
     cd /home/frappe/frappe-bench && \
-    if [ -d /opt/custom-apps/ashan_cn_procurement ]; then \
-      cp -a /opt/custom-apps/ashan_cn_procurement apps/ashan_cn_procurement && \
-      env/bin/python -m pip install --no-deps -e apps/ashan_cn_procurement && \
-      env/bin/python -c "import ashan_cn_procurement; print('ashan_cn_procurement import OK')" && \
-      if ! grep -qxF "ashan_cn_procurement" sites/apps.txt; then \
-        printf '%s\n' "ashan_cn_procurement" >> sites/apps.txt; \
-      fi && \
-      APP_PUBLIC="/home/frappe/frappe-bench/apps/ashan_cn_procurement/ashan_cn_procurement/public"; \
-      ASSET_LINK="/home/frappe/frappe-bench/sites/assets/ashan_cn_procurement"; \
-      if [ -d "${APP_PUBLIC}" ]; then \
-        mkdir -p sites/assets && \
-        if [ -e "${ASSET_LINK}" ] || [ -L "${ASSET_LINK}" ]; then rm -rf "${ASSET_LINK}"; fi && \
-        ln -s "${APP_PUBLIC}" "${ASSET_LINK}" && \
-        test -L "${ASSET_LINK}"; \
-      fi; \
+    cp -a /opt/ashan_cn_procurement apps/ashan_cn_procurement && \
+    env/bin/python -m pip install --no-deps -e apps/ashan_cn_procurement && \
+    env/bin/python -c "import frappe, erpnext, ashan_cn_procurement" && \
+    printf 'frappe\nerpnext\nashan_cn_procurement\n' > sites/apps.txt && \
+    APP_PUBLIC="/home/frappe/frappe-bench/apps/ashan_cn_procurement/ashan_cn_procurement/public" && \
+    ASSET_LINK="/home/frappe/frappe-bench/sites/assets/ashan_cn_procurement" && \
+    mkdir -p sites/assets && \
+    if [ -d "${APP_PUBLIC}" ]; then \
+      rm -rf "${ASSET_LINK}" && \
+      ln -s "${APP_PUBLIC}" "${ASSET_LINK}"; \
     fi && \
-    echo "{}" > sites/common_site_config.json && \
+    echo '{}' > sites/common_site_config.json && \
     find apps -mindepth 2 -type d -name .git -prune -exec rm -rf {} +
 
-FROM frappe/base:${FRAPPE_IMAGE_TAG} AS aio
+FROM frappe/base:${FRAPPE_IMAGE_TAG} AS runtime
 
 ARG FRAPPE_IMAGE_TAG=version-16
 ARG FRAPPE_BRANCH=version-16
@@ -66,41 +65,55 @@ ARG FRAPPE_PATH=https://github.com/frappe/frappe
 
 USER root
 
-# Install services for AIO.
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    mariadb-server mariadb-client \
-    redis-server redis-tools \
-    supervisor \
-    nginx \
-    gettext-base \
-    curl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+# No mariadb-server, mariadb-client, redis-server or redis-tools here.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      supervisor \
+      nginx \
+      gettext-base \
+      curl \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy bench from builder stage.
-COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+COPY --from=builder --chown=frappe:frappe \
+  /home/frappe/frappe-bench \
+  /home/frappe/frappe-bench
 
-# Build-time asset manifest used to detect image/site asset mismatches at runtime.
-RUN /bin/sh -ec "set -eu; cd /home/frappe/frappe-bench; { printf '%s\n' \"FRAPPE_IMAGE_TAG=${FRAPPE_IMAGE_TAG}\" \"FRAPPE_BRANCH=${FRAPPE_BRANCH}\" \"FRAPPE_PATH=${FRAPPE_PATH}\"; sha256sum sites/apps.json 2>/dev/null || true; find sites -maxdepth 1 \( -name 'apps.txt' -o -name 'apps.json' -o -name 'common_site_config.json' \) -type f -exec sha256sum {} + 2>/dev/null || true; find sites/assets -type f -exec sha256sum {} + 2>/dev/null || true; if [ -d apps/ashan_cn_procurement ]; then find apps/ashan_cn_procurement -type f -exec sha256sum {} + 2>/dev/null || true; fi; } | sha256sum | awk '{print \$1}' > sites/.asset-build-id"
+# Deterministic image identity used to refresh generated assets on a persistent
+# sites volume after an image upgrade.
+RUN /bin/sh -ec 'set -eu; \
+    cd /home/frappe/frappe-bench; \
+    { \
+      printf "%s\n" \
+        "FRAPPE_IMAGE_TAG='"${FRAPPE_IMAGE_TAG}"'" \
+        "FRAPPE_BRANCH='"${FRAPPE_BRANCH}"'" \
+        "FRAPPE_PATH='"${FRAPPE_PATH}"'"; \
+      printf "%s\n" "frappe" "erpnext" "ashan_cn_procurement"; \
+      find sites/assets -type f -exec sha256sum {} + 2>/dev/null || true; \
+      find apps/ashan_cn_procurement -type f -exec sha256sum {} + 2>/dev/null || true; \
+    } | sha256sum | awk "{print \$1}" > sites/.image-build-id'
 
-# If users mount an empty sites volume, it would hide the image's default
-# apps.txt/assets metadata. Keep a skeleton outside that volume for bootstrap.
+# Preserve image-generated assets and metadata outside the sites volume.
 RUN mkdir -p /opt/sites-skel && \
     cp -a /home/frappe/frappe-bench/sites/. /opt/sites-skel/ && \
     chown -R frappe:frappe /opt/sites-skel
 
-# AIO rootfs (supervisor configs + entrypoint).
 COPY single-aio/rootfs/ /
-RUN chmod +x \
-    /usr/local/bin/entrypoint.sh \
-    /usr/local/bin/aio-reset.sh \
-    /usr/local/bin/run-backend.sh \
-    /usr/local/bin/run-worker.sh \
-    /usr/local/bin/aio-healthcheck.sh \
-    /usr/local/bin/run-mariadb.sh \
-    /usr/local/bin/run-redis.sh
 
-# Persistent data.
-VOLUME ["/home/frappe/frappe-bench/sites", "/var/lib/mysql", "/var/lib/redis"]
+# External-only image must not accidentally inherit old internal-service files
+# from the source tree.
+RUN rm -f \
+      /etc/supervisor/conf.d/00-mariadb.conf \
+      /etc/supervisor/conf.d/00-redis.conf \
+      /usr/local/bin/run-mariadb.sh \
+      /usr/local/bin/run-redis.sh && \
+    chmod +x \
+      /usr/local/bin/entrypoint.sh \
+      /usr/local/bin/run-backend.sh \
+      /usr/local/bin/run-worker.sh \
+      /usr/local/bin/aio-healthcheck.sh
+
+VOLUME ["/home/frappe/frappe-bench/sites"]
 
 EXPOSE 8080
 
