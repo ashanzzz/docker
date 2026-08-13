@@ -59,6 +59,26 @@ jobs:
           chmod +x erpnext16/scripts/fetch-ashan-custom-app.sh
           bash erpnext16/scripts/fetch-ashan-custom-app.sh
 
+      - name: Verify Ashan build context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="erpnext16/custom-apps/ashan_cn_procurement"
+
+          test -f "$APP/pyproject.toml"
+          test -d "$APP/ashan_cn_procurement"
+
+          echo "=== Ashan build staging ==="
+          ls -lah "$APP"
+
+          echo
+          echo "=== pyproject.toml ==="
+          head -n 30 "$APP/pyproject.toml"
+
+          echo
+          echo "Ashan build context OK."
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
