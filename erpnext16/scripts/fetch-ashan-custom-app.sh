@@ -26,25 +26,52 @@ echo "[ashan-sync] Ref   : ${ASHAN_REPO_REF}"
 
 git clone --depth 1 --branch "$ASHAN_REPO_REF" "$clone_url" "$workdir/repo"
 
-SRC="$workdir/repo"
+REPO_ROOT="$workdir/repo"
 
-if [[ ! -f "$SRC/pyproject.toml" && ! -f "$SRC/setup.py" ]]; then
-  echo "[ashan-sync] ERROR: app root has no pyproject.toml/setup.py" >&2
+# 兼容两种 Ashan 仓库布局：
+#
+# 1. 仓库本身就是 Frappe App
+#    repo/pyproject.toml
+#    repo/ashan_cn_procurement/
+#
+# 2. 仓库是开发工作区，Frappe App 位于子目录
+#    repo/ashan_cn_procurement/pyproject.toml
+#    repo/ashan_cn_procurement/ashan_cn_procurement/
+
+if [[ -f "$REPO_ROOT/pyproject.toml" || -f "$REPO_ROOT/setup.py" ]]; then
+  SRC="$REPO_ROOT"
+
+elif [[ -f "$REPO_ROOT/$APP_NAME/pyproject.toml" || \
+        -f "$REPO_ROOT/$APP_NAME/setup.py" ]]; then
+  SRC="$REPO_ROOT/$APP_NAME"
+
+else
+  echo "[ashan-sync] ERROR: cannot locate Frappe app root for $APP_NAME" >&2
+  echo "[ashan-sync] Repository root contents:" >&2
+  find "$REPO_ROOT" -maxdepth 2 -type f \
+    \( -name pyproject.toml -o -name setup.py \) \
+    -print >&2 || true
   exit 2
 fi
 
 if [[ ! -d "$SRC/$APP_NAME" ]]; then
-  echo "[ashan-sync] ERROR: Python package missing: $APP_NAME/" >&2
+  echo "[ashan-sync] ERROR: Python package missing: $SRC/$APP_NAME" >&2
   exit 3
 fi
 
+echo "[ashan-sync] App root: $SRC"
+
+SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 rm -rf "$TARGET"
-mkdir -p "$(dirname "$TARGET")"
-cp -a "$SRC" "$TARGET"
+mkdir -p "$TARGET"
+
+cp -a "$SRC/." "$TARGET/"
+
 rm -rf "$TARGET/.git"
 
-SOURCE_SHA="$(git -C "$SRC" rev-parse HEAD)"
-printf '%s\n' "$SOURCE_SHA" > "$TARGET/.ashan-source-commit"
+printf '%s\n' "$SOURCE_SHA" \
+  > "$TARGET/.ashan-source-commit"
 
 echo "[ashan-sync] Synced ${APP_NAME}"
 echo "[ashan-sync] Commit: ${SOURCE_SHA}"
