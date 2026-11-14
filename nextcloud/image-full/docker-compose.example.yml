@@ -1,0 +1,66 @@
+services:
+  db:
+    image: mariadb:lts
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    restart: unless-stopped
+    volumes:
+      - db:/var/lib/mysql
+    environment:
+      - MYSQL_RANDOM_ROOT_PASSWORD=true
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_PASSWORD=change-me
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # If you want auth:
+    # command: ["redis-server", "--requirepass", "change-me"]
+
+  app:
+    image: ghcr.io/ashanzzz/nextcloud-full:33-apache-full
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+      - redis
+    # IMPORTANT: avoid mounting /var/www/html entirely (it complicates upgrades).
+    # Persist only config/custom_apps/data (and optionally themes).
+    volumes:
+      - nextcloud-custom-apps:/var/www/html/custom_apps
+      - nextcloud-config:/var/www/html/config
+      - nextcloud-data:/var/www/html/data
+      # - nextcloud-themes:/var/www/html/themes
+    environment:
+      # --- Initial installation / DB wiring (official nextcloud image envs)
+      - MYSQL_HOST=db
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - MYSQL_PASSWORD=change-me
+      # Optional: automate initial admin creation (set only on first run)
+      # - NEXTCLOUD_ADMIN_USER=admin
+      # - NEXTCLOUD_ADMIN_PASSWORD=change-me
+
+      # --- Redis (file locking + cache)
+      - REDIS_HOST=redis
+      # If needed:
+      # - REDIS_HOST_PASSWORD=change-me
+
+  cron:
+    image: ghcr.io/ashanzzz/nextcloud-full:33-apache-full
+    restart: unless-stopped
+    depends_on:
+      - app
+    volumes:
+      - nextcloud-custom-apps:/var/www/html/custom_apps
+      - nextcloud-config:/var/www/html/config
+      - nextcloud-data:/var/www/html/data
+    entrypoint: /cron.sh
+
+volumes:
+  db:
+  nextcloud-custom-apps:
+  nextcloud-config:
+  nextcloud-data:
+  # nextcloud-themes:
