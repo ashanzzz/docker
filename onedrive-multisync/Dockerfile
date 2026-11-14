@@ -1,7 +1,7 @@
 # ==============================================================================
 # Stage 1: Build Ultra-Lightweight Static Rust Supervisor (~4MB stripped binary)
 # ==============================================================================
-FROM rust:1.82-alpine AS builder
+FROM rust:alpine AS builder
 RUN apk add --no-cache musl-dev pkgconfig
 WORKDIR /build
 COPY rust/Cargo.toml ./
