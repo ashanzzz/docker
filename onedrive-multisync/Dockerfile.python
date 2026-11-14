@@ -1,0 +1,21 @@
+# ==============================================================================
+# Alternative Pure Python 3.12 Runtime on `driveone/onedrive:alpine` (~95MB total)
+# ==============================================================================
+FROM driveone/onedrive:alpine
+RUN apk add --no-cache python3 ca-certificates tzdata curl
+COPY python/onedrive_multisync/daemon.py /usr/local/bin/onedrive-multisync
+RUN chmod +x /usr/local/bin/onedrive-multisync
+
+ENV CONFIG_DIR=/config \
+    DATA_DIR=/data \
+    API_PORT=8080 \
+    HTTPS_PROXY=http://192.168.8.11:7890 \
+    NO_PROXY=localhost,127.0.0.1,192.168.0.0/16
+
+VOLUME ["/config", "/data"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8080/health || exit 1
+
+ENTRYPOINT ["python3", "/usr/local/bin/onedrive-multisync"]

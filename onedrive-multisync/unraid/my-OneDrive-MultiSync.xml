@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>OneDrive-MultiSync</Name>
+  <Repository>ghcr.io/ashanzzz/onedrive-multisync:latest</Repository>
+  <Registry>https://github.com/ashanzzz/docker/pkgs/container/onedrive-multisync</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/ashanzzz/docker/tree/main/onedrive-multisync</Support>
+  <Project>https://github.com/abraunegg/onedrive</Project>
+  <Overview>企业级单容器多账号 OneDrive 双向同步与自愈网关（全面替代群晖 Cloud Sync，支撑 Nextcloud Local-First 0ms 本地落盘与异地容灾）。</Overview>
+  <Category>Backup: Cloud: Network:Management</Category>
+  <WebUI>http://[IP]:[PORT:8686]/api/v1/accounts</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/abraunegg/onedrive/master/contrib/logo/onedrive-client-linux.png</Icon>
+  <ExtraParams>--stop-timeout=30</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Management REST API Port" Target="8080" Default="8686" Mode="tcp" Description="健康探针 (/health) 与多账号管理 API 端口" Type="Port" Display="always" Required="true" Mask="false">8686</Config>
+  <Config Name="Data Volume (Nextcloud Cloud Sync Root)" Target="/data" Default="/mnt/user/Hdd_Disk_Appdata/nextcloud/data/ashan/files/Cloud Sync" Mode="rw" Description="单卷磁盘映射根目录，容器自动绑定 /data/OneDrive-&lt;account_id&gt;" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Hdd_Disk_Appdata/nextcloud/data/ashan/files/Cloud Sync</Config>
+  <Config Name="Config Volume (Multi-Account Config Root)" Target="/config" Default="/mnt/user/appdata/onedrive-multisync/config" Mode="rw" Description="多账号配置与 SQLite 状态缓存根目录 (/config/&lt;account_id&gt;)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/onedrive-multisync/config</Config>
+  <Config Name="HTTP/HTTPS Outbound Proxy" Target="HTTPS_PROXY" Default="http://192.168.8.11:7890" Mode="" Description="访问 Microsoft Graph API 必填代理地址，内网流量自动直连" Type="Variable" Display="always" Required="true" Mask="false">http://192.168.8.11:7890</Config>
+  <Config Name="Telegram Bot Token" Target="TG_BOT_TOKEN" Default="" Mode="" Description="用于推送 AUTH_REQUIRED 一键重授权告警卡片的 Telegram Bot Token" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Telegram Chat ID" Target="TG_CHAT_ID" Default="" Mode="" Description="接收告警卡片的预设 Telegram Chat ID" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="PUID" Target="ONEDRIVE_UID" Default="99" Mode="" Description="Unraid nobody UID (99)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="ONEDRIVE_GID" Default="100" Mode="" Description="Unraid users GID (100)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+</Container>
