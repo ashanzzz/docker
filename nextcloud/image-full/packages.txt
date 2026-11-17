@@ -3,6 +3,7 @@ ffmpeg
 procps
 curl
 ca-certificates
+xz-utils
 
 # Better previews / media metadata (recommended for Photos/Memories/PDF previews)
 # NOTE: keep list conservative; avoid huge packages unless needed.

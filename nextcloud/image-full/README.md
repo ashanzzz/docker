@@ -1,17 +1,17 @@
 # ashanzzz/nextcloud-full
 
-An automated **derived** Nextcloud image that tracks the official Nextcloud **33.x** Docker image and adds extra system dependencies (e.g. `ffmpeg`) needed by certain Nextcloud apps/features.
+An automated **derived** Nextcloud image that tracks the official Nextcloud Docker image (currently **35.x**, pinned via `NEXTCLOUD_VERSION`) and adds extra system dependencies (e.g. `ffmpeg`, glibc Node.js) needed by certain Nextcloud apps/features.
 
 ## Upstream / references
 
 - Official build logic & version source: https://github.com/nextcloud/docker
 - Official Nextcloud image (Docker Hub): https://hub.docker.com/_/nextcloud
 
-We follow upstream by reading `https://raw.githubusercontent.com/nextcloud/docker/master/versions.json` and taking `33.version` as the authoritative latest patch version.
+We follow upstream by reading `https://raw.githubusercontent.com/nextcloud/docker/master/versions.json` and taking the highest major's `version` field as the authoritative latest patch version.
 
 ## Goals
 
-- Track **Nextcloud 33 patch releases** automatically (daily)
+- Track **Nextcloud patch releases** automatically (monthly schedule + manual dispatch)
 - Publish to GHCR: `ghcr.io/ashanzzz/nextcloud-full`
 - Keep it easy to extend: add packages via `packages.txt`
 
@@ -32,6 +32,14 @@ See `packages.txt`.
 - 我们在镜像里内置了 **libtensorflow (CPU)**（默认 2.9.1），用于避免 Recognize 的 MoViNet 视频分类在某些环境里因为缺 `libtensorflow.so.2` 而回退到 WASM，进而报错：`Movinet does not support WASM mode`。
 - 代价：镜像体积会明显增大（数百 MB 级）。
 
+## Node.js runtime (glibc) — required for Recognize's local classifiers
+
+- Recognize 本体不自带可用的 node：让 app 自己去下载时，它拉的是 **musl** 构建（`node-vXX-linux-x64-musl`）。本镜像基于 Debian/glibc，该二进制执行时只报 `exec .../bin/node: no such file or directory`（缺 `/lib/ld-musl-x86_64.so.1`），于是人脸识别/物体识别全部静默空转：`oc_recognize_face_detections = 0`、队列全空，但界面上看不出任何错误。
+- 本镜像内置官方 **glibc node（默认 22.23.2，`NODE_VERSION` 可覆盖）** 到 `/usr/local/lib/nodejs`，并在 PATH 暴露 `node` / `npm` / `npx`。
+- entrypoint hook `30-recognize-enable-features.sh` 会把 `recognize node_binary` 指向 `/usr/local/bin/node`，并打开 faces/imagenet/landmarks/movinet/musicnn 与温和的 batchSize（只在未设置或为 false 时写入，不覆盖管理员显式选择）。
+- 该 hook 早期版本用 `app:list | grep '^\s*recognize\s*$'` 判断启用状态，实际输出是 `  - recognize: 13.2.0`，永远匹配不上，导致 hook 静默不生效；现已改为解析 `app:list --output=json`。
+- 全量分类与聚类仍是显式动作：`occ recognize:classify` / `occ recognize:cluster-faces`（会长时间吃 CPU，建议配合维护窗口）。
+
 ## Recognize GPU mode (stability hook)
 
 - 识别 GPU 模式在一些安装里会遇到：`tfjs-node-gpu` 缺少 `tfjs_binding.node`，导致报错并中断分类。
@@ -40,8 +48,8 @@ See `packages.txt`.
 
 ## Tags
 
-- `ghcr.io/ashanzzz/nextcloud-full:<33.x.y>-apache-full` (immutable, recommended for production pinning)
-- `ghcr.io/ashanzzz/nextcloud-full:33-apache-full` (moving, tracks latest 33 patch)
+- `ghcr.io/ashanzzz/nextcloud-full:<35.x.y>-apache-full` (immutable, recommended for production pinning)
+- `ghcr.io/ashanzzz/nextcloud-full:35-apache-full` (moving, tracks latest patch of that major)
 - `ghcr.io/ashanzzz/nextcloud-full:latest` (moving, convenience tag; equivalent to latest built)
 
 ## Automation
@@ -49,7 +57,7 @@ See `packages.txt`.
 Workflow: `.github/workflows/nextcloud-full-ci-sync-build.yml` (in this repo)
 
 Daily steps (schedule trigger):
-1) Read upstream latest `33.version` from `nextcloud/docker` `versions.json`
+1) Read upstream latest major's version from `nextcloud/docker` `versions.json`
 2) Verify upstream base image exists: `nextcloud:<version>-apache`
 3) Update `NEXTCLOUD_VERSION` if changed and commit
 4) Build + push image to GHCR
