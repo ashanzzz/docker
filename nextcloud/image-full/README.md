@@ -1,6 +1,6 @@
 # ashanzzz/nextcloud-full
 
-An automated **derived** Nextcloud image that tracks the official Nextcloud Docker image (currently **35.x**, pinned via `NEXTCLOUD_VERSION`) and adds extra system dependencies (e.g. `ffmpeg`, glibc Node.js) needed by certain Nextcloud apps/features.
+An automated **derived** Nextcloud image that tracks the official Nextcloud Docker image (currently **35.x**, pinned via `NEXTCLOUD_VERSION`) and adds extra system dependencies (e.g. `ffmpeg`, glibc Node.js) needed by certain Nextcloud apps (previews, AI classification).
 
 ## Upstream / references
 
@@ -32,7 +32,7 @@ See `packages.txt`.
 - 我们在镜像里内置了 **libtensorflow (CPU)**（默认 2.9.1），用于避免 Recognize 的 MoViNet 视频分类在某些环境里因为缺 `libtensorflow.so.2` 而回退到 WASM，进而报错：`Movinet does not support WASM mode`。
 - 代价：镜像体积会明显增大（数百 MB 级）。
 
-## Node.js runtime (glibc) — required for Recognize's local classifiers
+## Node.js runtime (glibc) for Recognize's local classifiers
 
 - Recognize 本体不自带可用的 node：让 app 自己去下载时，它拉的是 **musl** 构建（`node-vXX-linux-x64-musl`）。本镜像基于 Debian/glibc，该二进制执行时只报 `exec .../bin/node: no such file or directory`（缺 `/lib/ld-musl-x86_64.so.1`），于是人脸识别/物体识别全部静默空转：`oc_recognize_face_detections = 0`、队列全空，但界面上看不出任何错误。
 - 本镜像内置官方 **glibc node（默认 22.23.2，`NODE_VERSION` 可覆盖）** 到 `/usr/local/lib/nodejs`，并在 PATH 暴露 `node` / `npm` / `npx`。
